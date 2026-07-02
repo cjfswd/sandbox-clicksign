@@ -19,15 +19,33 @@ interface CommunicateEvents {
   document_signed: string;
 }
 
-function communicateEventsFor(
+/**
+ * Canal usado tanto para communicate_events quanto para o requisito de
+ * autenticação — ambos exigem 'email' ou 'whatsapp', nunca 'none', e o
+ * requisito de autenticação falha com 422 se o canal escolhido não tiver
+ * o dado correspondente no signatário.
+ *
+ * Para delivery='email'/'whatsapp' o canal é a própria escolha do usuário
+ * (a validação já garante o contato correspondente). Só em delivery='link'
+ * — onde não há canal explícito — escolhemos pelo contato disponível,
+ * preferindo e-mail.
+ */
+function contactChannelFor(
   delivery: Delivery,
   hasEmail: boolean,
   hasPhone: boolean,
-): CommunicateEvents {
-  // A Clicksign exige document_signed em 'email' ou 'whatsapp' — nunca 'none'.
-  // Preferir e-mail quando disponível; cair para whatsapp só se não houver e-mail.
-  const confirmationChannel = hasEmail ? 'email' : 'whatsapp';
+): 'email' | 'whatsapp' {
+  if (delivery === 'whatsapp') return 'whatsapp';
+  if (delivery === 'email') return 'email';
+  if (hasEmail) return 'email';
+  if (hasPhone) return 'whatsapp';
+  throw new Error(
+    'Signatário sem e-mail e sem telefone: a Clicksign exige ao menos um contato ' +
+      'para autenticação e para a notificação de "documento assinado".',
+  );
+}
 
+function communicateEventsFor(delivery: Delivery, contactChannel: 'email' | 'whatsapp'): CommunicateEvents {
   switch (delivery) {
     case 'email':
       return { signature_request: 'email', signature_reminder: 'email', document_signed: 'email' };
@@ -39,16 +57,10 @@ function communicateEventsFor(
       };
     case 'link':
       // Envio manual: a Clicksign não notifica a solicitação de assinatura.
-      if (!hasEmail && !hasPhone) {
-        throw new Error(
-          'Signatário sem e-mail e sem telefone: a Clicksign exige ao menos um contato ' +
-            'para a notificação de "documento assinado" (document_signed).',
-        );
-      }
       return {
         signature_request: 'none',
         signature_reminder: 'none',
-        document_signed: confirmationChannel,
+        document_signed: contactChannel,
       };
   }
 }
@@ -64,24 +76,25 @@ export async function processItem(
   const pdfBase64 = deps.readPdfBase64(item.id);
   const document = await clicksign.run((c) => c.addDocument(envelope.id, item.filename, pdfBase64));
 
+  const contactChannel = contactChannelFor(
+    item.delivery,
+    item.signer.email !== undefined,
+    item.signer.phoneNumber !== undefined,
+  );
+
   const signer = await clicksign.run((c) =>
     c.addSigner(envelope.id, {
       name: item.signer.name,
       email: item.signer.email,
       phoneNumber: item.signer.phoneNumber,
-      communicateEvents: communicateEventsFor(
-        item.delivery,
-        item.signer.email !== undefined,
-        item.signer.phoneNumber !== undefined,
-      ),
+      communicateEvents: communicateEventsFor(item.delivery, contactChannel),
     }),
   );
 
   await clicksign.run((c) => c.addQualificationRequirement(envelope.id, document.id, signer.id));
 
-  const auth = item.delivery === 'whatsapp' ? 'whatsapp' : 'email';
   await clicksign.run((c) =>
-    c.addAuthenticationRequirement(envelope.id, document.id, signer.id, auth),
+    c.addAuthenticationRequirement(envelope.id, document.id, signer.id, contactChannel),
   );
 
   await clicksign.run((c) => c.activateEnvelope(envelope.id));
