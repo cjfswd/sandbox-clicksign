@@ -1,6 +1,45 @@
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent, State};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
+use tauri_plugin_sql::{Migration, MigrationKind};
+
+// --- Fase 1 da migração (feat/desktop-tauri-no-sidecar): schema portado de
+// src/infra/repository.ts, agora registrado como migration do plugin-sql.
+// Convive com o sidecar Node por enquanto — nada aqui é usado pelo app
+// ainda, só está sendo validado isoladamente (ver MIGRATION-PLAN.md).
+const SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS batches (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS items (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES batches(id),
+  seq INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  signer_name TEXT NOT NULL,
+  signer_email TEXT,
+  signer_phone TEXT,
+  delivery TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  envelope_id TEXT,
+  signer_id TEXT,
+  sign_url TEXT,
+  error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
+CREATE INDEX IF NOT EXISTS idx_items_batch ON items(batch_id);
+"#;
+
+fn batch_migrations() -> Vec<Migration> {
+    vec![Migration {
+        version: 1,
+        description: "create_batches_and_items",
+        sql: SCHEMA_SQL,
+        kind: MigrationKind::Up,
+    }]
+}
 
 /// Porta e chave interna compartilhadas com o frontend (src/api-client.ts).
 /// Não é um segredo real: a batch API só escuta em 127.0.0.1, iniciada e
@@ -92,6 +131,12 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations("sqlite:sandbox/batches.db", batch_migrations())
+                .add_migrations("sqlite:producao/batches.db", batch_migrations())
+                .build(),
+        )
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![start_sidecar, internal_api_config])
         .setup(|app| {
@@ -102,6 +147,13 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // SQLite não cria diretórios pai sozinho (CANTOPEN); os dois
+            // ambientes precisam existir ANTES de qualquer Database.load().
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(data_dir.join("sandbox"))?;
+            std::fs::create_dir_all(data_dir.join("producao"))?;
+
             Ok(())
         })
         .build(tauri::generate_context!())
