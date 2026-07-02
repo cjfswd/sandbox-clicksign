@@ -77,6 +77,16 @@ function validateItem(item: BatchItemInput, index: number): ItemValidationError[
     }
   }
 
+  // A Clicksign exige o campo document_signed em 'email' ou 'whatsapp' (nunca 'none'),
+  // então todo signatário precisa de ao menos um contato, mesmo em delivery 'link'.
+  if (item.signer.email === undefined && !item.signer.phoneNumber?.trim()) {
+    errors.push({
+      index,
+      field: 'signer.email',
+      message: 'Informe e-mail ou telefone do signatário (a Clicksign exige ao menos um contato)',
+    });
+  }
+
   errors.push(...validatePdfContent(item.contentBase64, index));
   return errors;
 }

@@ -59,8 +59,18 @@ describe('validateBatchItems', () => {
     }
   });
 
-  it('aceita delivery=link sem email nem telefone', () => {
+  it('rejeita delivery=link sem email nem telefone (Clicksign exige contato para document_signed)', () => {
     const result = validateBatchItems([validItem({ signer: { name: 'Fulano da Silva' } })]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors[0]).toMatchObject({ index: 0, field: 'signer.email' });
+    }
+  });
+
+  it('aceita delivery=link com apenas telefone (sem email)', () => {
+    const result = validateBatchItems([
+      validItem({ signer: { name: 'Fulano da Silva', phoneNumber: '11999998888' } }),
+    ]);
     expect(result.ok).toBe(true);
   });
 
@@ -99,7 +109,7 @@ describe('validateBatchItems', () => {
     ]);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.map((e) => e.index)).toEqual([1, 2]);
+      expect(new Set(result.errors.map((e) => e.index))).toEqual(new Set([1, 2]));
     }
   });
 });

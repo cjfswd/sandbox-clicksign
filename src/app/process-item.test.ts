@@ -100,11 +100,36 @@ describe('processItem', () => {
     expect(result).toEqual({ envelopeId: 'env-1', signerId: 'sig-1', signUrl: SIGN_URL });
     expect(mocks.notifySigner).not.toHaveBeenCalled();
 
-    // link: Clicksign não notifica ninguém
+    // link: Clicksign não notifica ninguém, mas document_signed exige email/whatsapp
     const signerArgs = mocks.addSigner.mock.calls[0]!;
     expect(signerArgs[1]).toMatchObject({
-      communicateEvents: expect.objectContaining({ signature_request: 'none' }),
+      communicateEvents: expect.objectContaining({
+        signature_request: 'none',
+        document_signed: 'email',
+      }),
     });
+  });
+
+  it('delivery=link com apenas telefone usa whatsapp para document_signed', async () => {
+    const { client, mocks } = buildMockClient();
+    await processItem(
+      item({ delivery: 'link', signer: { name: 'Fulano da Silva', phoneNumber: '11999998888' } }),
+      deps(client),
+    );
+
+    expect(mocks.addSigner.mock.calls[0]![1]).toMatchObject({
+      communicateEvents: expect.objectContaining({ document_signed: 'whatsapp' }),
+    });
+  });
+
+  it('delivery=link sem email nem telefone lança erro (Clicksign exige contato para document_signed)', async () => {
+    const { client } = buildMockClient();
+    await expect(
+      processItem(
+        item({ delivery: 'link', signer: { name: 'Fulano da Silva' } }),
+        deps(client),
+      ),
+    ).rejects.toThrow(/e-mail e sem telefone/);
   });
 
   it('delivery=email configura canal e dispara notificação', async () => {

@@ -19,7 +19,15 @@ interface CommunicateEvents {
   document_signed: string;
 }
 
-function communicateEventsFor(delivery: Delivery, hasEmail: boolean): CommunicateEvents {
+function communicateEventsFor(
+  delivery: Delivery,
+  hasEmail: boolean,
+  hasPhone: boolean,
+): CommunicateEvents {
+  // A Clicksign exige document_signed em 'email' ou 'whatsapp' — nunca 'none'.
+  // Preferir e-mail quando disponível; cair para whatsapp só se não houver e-mail.
+  const confirmationChannel = hasEmail ? 'email' : 'whatsapp';
+
   switch (delivery) {
     case 'email':
       return { signature_request: 'email', signature_reminder: 'email', document_signed: 'email' };
@@ -30,12 +38,17 @@ function communicateEventsFor(delivery: Delivery, hasEmail: boolean): Communicat
         document_signed: 'whatsapp',
       };
     case 'link':
-      // Envio manual: a Clicksign não notifica a solicitação; confirmação de
-      // assinatura vai por e-mail apenas se houver e-mail cadastrado.
+      // Envio manual: a Clicksign não notifica a solicitação de assinatura.
+      if (!hasEmail && !hasPhone) {
+        throw new Error(
+          'Signatário sem e-mail e sem telefone: a Clicksign exige ao menos um contato ' +
+            'para a notificação de "documento assinado" (document_signed).',
+        );
+      }
       return {
         signature_request: 'none',
         signature_reminder: 'none',
-        document_signed: hasEmail ? 'email' : 'none',
+        document_signed: confirmationChannel,
       };
   }
 }
@@ -56,7 +69,11 @@ export async function processItem(
       name: item.signer.name,
       email: item.signer.email,
       phoneNumber: item.signer.phoneNumber,
-      communicateEvents: communicateEventsFor(item.delivery, item.signer.email !== undefined),
+      communicateEvents: communicateEventsFor(
+        item.delivery,
+        item.signer.email !== undefined,
+        item.signer.phoneNumber !== undefined,
+      ),
     }),
   );
 

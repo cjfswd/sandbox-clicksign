@@ -46,7 +46,6 @@ import {
   widgetSetWidth,
 } from 'perry/ui';
 import { preferencesGet, preferencesSet } from 'perry/system';
-import { validateBatchItems } from '../../src/domain/validation.ts';
 import {
   createBatchSync,
   getBatchSync,
@@ -155,6 +154,67 @@ function normalizePhone(raw: string): string {
   return raw.replace(/\D/g, '');
 }
 
+interface ValidationError {
+  index: number;
+  message: string;
+}
+
+/**
+ * Validação local dos itens (espelha src/domain/validation.ts do backend).
+ * Reimplementada aqui em estilo imperativo simples: o codegen do Perry
+ * 0.5.1182 corrompe o retorno union `{ok, errors}` do módulo compartilhado
+ * (errors chegava como null — classe de bug NaN-boxing conhecida do projeto).
+ */
+function validateDrafts(payload: BatchItemPayload[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const maxPdfBytes = 10 * 1024 * 1024;
+
+  for (let i = 0; i < payload.length; i++) {
+    const item = payload[i]!;
+    const name = item.signer.name.trim();
+
+    if (name.split(/\s+/).length < 2) {
+      errors.push({ index: i, message: 'Informe nome e sobrenome do signatário' });
+    }
+    if (/\d/.test(name)) {
+      errors.push({ index: i, message: 'O nome do signatário não pode conter números' });
+    }
+    if (item.delivery === 'email') {
+      const email = item.signer.email ?? '';
+      if (!emailPattern.test(email)) {
+        errors.push({ index: i, message: "Envio por e-mail exige um e-mail válido" });
+      }
+    }
+    if (item.delivery === 'whatsapp') {
+      const phone = item.signer.phoneNumber ?? '';
+      if (phone.length < 10) {
+        errors.push({ index: i, message: 'Envio por WhatsApp exige telefone com DDD' });
+      }
+    }
+    if (item.signer.email !== undefined && !emailPattern.test(item.signer.email)) {
+      errors.push({ index: i, message: 'E-mail inválido' });
+    }
+    // A Clicksign exige document_signed em 'email' ou 'whatsapp' (nunca 'none'):
+    // todo signatário precisa de ao menos um contato, mesmo em delivery 'link'.
+    const hasEmail = item.signer.email !== undefined && item.signer.email !== '';
+    const hasPhone = (item.signer.phoneNumber ?? '').length > 0;
+    if (!hasEmail && !hasPhone) {
+      errors.push({
+        index: i,
+        message: 'Informe e-mail ou telefone do signatário (a Clicksign exige ao menos um contato)',
+      });
+    }
+    const bytes = Buffer.from(item.contentBase64, 'base64');
+    if (bytes.length === 0 || bytes.subarray(0, 5).toString('latin1').indexOf('%PDF') !== 0) {
+      errors.push({ index: i, message: 'O arquivo não é um PDF válido' });
+    } else if (bytes.length > maxPdfBytes) {
+      errors.push({ index: i, message: 'PDF excede o limite de 10 MB da Clicksign' });
+    }
+  }
+  return errors;
+}
+
 function formatPhone(digits: string): string {
   if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
   if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
@@ -243,16 +303,28 @@ function sendBatch(): void {
     return;
   }
 
-  const validation = validateBatchItems(payload);
-  if (!validation.ok) {
-    const lines = validation.errors
-      .map((e) => `• ${drafts[e.index]?.filename ?? `item ${e.index + 1}`}: ${e.message}`)
-      .join('\n');
-    validation.errors.forEach((e) => {
+  const errors = validateDrafts(payload);
+  if (errors.length > 0) {
+    // diagnóstico legível no stdout (visível rodando pelo terminal)
+    for (const d of drafts) {
+      console.log(`[debug] lido: ${d.filename} | nome="${d.name}" email="${d.email}" fone="${d.phone}" envio=${DELIVERY_OPTIONS[d.deliveryIndex]}`);
+    }
+    for (const e of errors) {
+      console.log(`[debug] erro item ${e.index}: ${e.message}`);
+    }
+    // o alert do Win32 descarta o corpo da mensagem — os erros aparecem
+    // na linha de cada documento e na barra de status
+    for (const e of errors) {
       const draft = drafts[e.index];
       if (draft) setRowStatus(draft, e.message, 'erro');
-    });
-    alert('Corrija antes de enviar', lines);
+    }
+    const first = errors[0]!;
+    const firstFile = drafts[first.index]?.filename ?? `item ${first.index + 1}`;
+    setStatusBar(
+      `${errors.length} problema(s) — veja as mensagens em vermelho nas linhas. Primeiro: ${firstFile}: ${first.message}`,
+      'erro',
+    );
+    alert(`Corrija antes de enviar: ${errors.length} problema(s)`, '');
     return;
   }
 
