@@ -1,0 +1,14 @@
+{
+  "name": "healthmais-assinaturas-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "App desktop nativo (Perry) para envio em lote de documentos via batch API Clicksign",
+  "type": "module",
+  "scripts": {
+    "build": "perry compile src/main.ts -o assinaturas.exe",
+    "start": "perry run src/main.ts"
+  },
+  "dependencies": {
+    "@perryts/perry": "^0.5.1182"
+  }
+}

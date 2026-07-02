@@ -4,6 +4,7 @@
  * erros internos são sanitizados para nunca vazar segredos (critério 5).
  */
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { timingSafeEqual } from 'node:crypto';
 import type { BatchRepository } from '../infra/repository.ts';
 import type { PdfStore } from '../infra/pdf-store.ts';
@@ -22,6 +23,9 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const secrets = [deps.apiKey, ...(deps.secrets ?? [])].filter((s) => s.length > 0);
+
+  // App desktop (webview Tauri) chama de outra origem; a API key é a barreira real.
+  app.use('*', cors({ origin: '*', allowHeaders: ['x-api-key', 'content-type'] }));
 
   app.use('*', async (c, next) => {
     const provided = c.req.header('x-api-key') ?? '';

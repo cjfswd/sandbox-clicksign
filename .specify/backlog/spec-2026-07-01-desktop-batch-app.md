@@ -16,14 +16,18 @@ distribuir os links de assinatura.
 O app **nunca** fala diretamente com a Clicksign: consome exclusivamente a batch API,
 autenticado por API key. O token da Clicksign permanece só no servidor.
 
-> **Decisão de framework (resolvida em 2026-07-01):** o Perry
-> (https://github.com/PerryTS/perry, compilador TS→nativo via SWC+LLVM) foi avaliado:
-> o compilador suporta Windows, mas a camada de UI desktop (`perry-react`) hoje gera
-> apenas apps macOS — Win32 está no roadmap ("eventually"). Decisão do usuário:
-> **implementar a GUI em Tauri 2 agora** e migrar para perry-react quando o suporte
-> Win32 for lançado. A spec permanece agnóstica de framework para facilitar essa
-> migração: lógica de negócio (cliente da API, validação, polling) deve ficar em
-> módulos TypeScript puros, separados da camada de UI.
+> **Decisão de framework (final, 2026-07-02): Perry com `perry/ui`.** A avaliação
+> inicial olhou para o `perry-react` (README indicava só macOS), mas o usuário
+> apontou — e a verificação confirmou (`crates/perry-ui-windows`, docs ui/overview) —
+> que o **`perry/ui` suporta Win32 nativamente** (HWND widgets). O app foi
+> implementado em `desktop/` com `perry/ui` declarativo, compilado para
+> `assinaturas.exe` nativo (~16 MB, sem runtime). Tauri descartado; scaffold removido.
+
+> **Status da implementação:** MVP funcional entregue em `desktop/src/main.ts`
+> (fluxo abreviado spec→implementação a pedido do usuário). Critérios 1–6 e 8–9
+> implementados; critério 7 (histórico de lotes) e o retry por item na UI (parte
+> do critério 5) ficam para a próxima iteração. Verificado: compila, executa e a
+> janela Win32 responde; teste interativo de ponta a ponta pendente com o operador.
 
 ## Usuário afetado
 

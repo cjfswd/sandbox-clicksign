@@ -1,0 +1,6 @@
+node_modules/
+.perry-cache/
+*.exe
+*.lib
+*.exp
+*.pdb

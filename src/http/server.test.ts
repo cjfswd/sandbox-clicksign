@@ -52,6 +52,23 @@ describe('batch API HTTP', () => {
     return app.request(path, { ...init, headers });
   }
 
+  describe('CORS (app desktop)', () => {
+    it('responde preflight OPTIONS permitindo x-api-key', async () => {
+      const res = await app.request('/batches', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'tauri://localhost',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'x-api-key,content-type',
+        },
+      });
+      expect(res.status).toBe(204);
+      expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+        'x-api-key',
+      );
+    });
+  });
+
   describe('autenticação (critério 6)', () => {
     it('401 sem x-api-key', async () => {
       const res = await request('/batches', { method: 'POST' }, null);
