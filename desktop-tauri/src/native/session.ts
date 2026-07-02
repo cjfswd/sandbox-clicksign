@@ -78,7 +78,11 @@ export async function startSession(env: Environment, clicksignToken: string): Pr
 
     async testConnection() {
       try {
-        await client.getEnvelope('00000000-0000-0000-0000-000000000000');
+        // Passa por throttled (não client direto) — compartilha o bucket
+        // com o worker e re-tenta sozinho em 429 (achado real: sem isso,
+        // um 429 durante um lote grande em andamento vira "inacessível" por
+        // engano, mesmo com o token e a rede perfeitamente ok).
+        await throttled.run((c) => c.getEnvelope('00000000-0000-0000-0000-000000000000'));
         return 'ok';
       } catch (error) {
         if (error instanceof ClicksignError) {

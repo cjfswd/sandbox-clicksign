@@ -3,11 +3,14 @@ use tauri::{Manager, RunEvent, State};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
-// --- Fase 1 da migração (feat/desktop-tauri-no-sidecar): schema portado de
-// src/infra/repository.ts, agora registrado como migration do plugin-sql.
-// Convive com o sidecar Node por enquanto — nada aqui é usado pelo app
-// ainda, só está sendo validado isoladamente (ver MIGRATION-PLAN.md).
+// --- Migração para arquitetura nativa (feat/desktop-tauri-no-sidecar):
+// schema portado de src/infra/repository.ts, registrado como migration do
+// plugin-sql. WAL explícito (paridade com o node:sqlite original) — sem
+// isso, escritas concorrentes no mesmo arquivo têm mais chance de
+// SQLITE_BUSY. Convive com o sidecar Node por enquanto, ainda não removido
+// (ver MIGRATION-PLAN.md).
 const SCHEMA_SQL: &str = r#"
+PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS batches (
   id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL

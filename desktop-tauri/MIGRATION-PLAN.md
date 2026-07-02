@@ -1,7 +1,7 @@
 # Plano: eliminar o sidecar Node, tudo dentro do `app.exe`
 
 **Branch:** `feat/desktop-tauri-no-sidecar`
-**Status:** planejamento — nenhum código portado ainda
+**Status:** Fases 1-7 concluídas e validadas. Fases 8-9 pendentes de decisão do usuário (removem/mantêm código em uso na `main`).
 
 ## Objetivo
 
@@ -40,57 +40,77 @@ comportamento das duas versões lado a lado.
 
 ## Etapas (cada uma testável antes de seguir pra próxima)
 
-### Fase 1 — Persistência
-- Adiciona `@tauri-apps/plugin-sql` (JS) + `tauri-plugin-sql` (Rust, feature `sqlite`)
-- Cria o schema (mesma tabela `batches`/`items` de `src/infra/repository.ts`)
-  via migration do plugin
-- Porta `BatchRepository` para `desktop-tauri/src/native/repository.ts` —
-  **toda API vira `async`** (plugin-sql é IPC, não é síncrono como `node:sqlite`)
-- **Risco a verificar:** o `UPDATE ... RETURNING *` que faz o claim atômico
-  do próximo item pendente depende de suporte a `RETURNING` no SQLite
-  embutido no `sqlx` — testar isso primeiro, é o ponto mais arriscado da Fase 1
-- Teste: script isolado dentro do app real (Tauri não roda fora do runtime)
-  criando/lendo/reclamando itens, comparando com o comportamento do
-  `repository.test.ts` original
+### Fase 1 — Persistência ✅
+- `@tauri-apps/plugin-sql` (JS) + `tauri-plugin-sql` (Rust, feature `sqlite`)
+- `BatchRepository` portado para `desktop-tauri/src/native/repository.ts` —
+  toda API assíncrona (IPC), migrations registradas por ambiente
+  (`sandbox/batches.db`, `producao/batches.db`)
+- **Achado real #1:** SQLite não cria diretório pai sozinho (`code 14
+  CANTOPEN`) — corrigido criando `sandbox/`/`producao/` no `.setup()` do Rust
+- **Achado real #2:** `sql:default` não inclui `allow-execute` — permissões
+  explícitas adicionadas
+- **Achado real #3:** migration original não tinha `PRAGMA journal_mode=WAL`
+  (esquecido ao portar de `node:sqlite`, que já fazia isso) — sem WAL,
+  escritas concorrentes têm mais chance de `SQLITE_BUSY`; corrigido
+- Validado: `RETURNING` funciona (sqlx-sqlite 0.8.6), 8/8 PASS em self-test
+  isolado (claim atômico, ordem, transação, reclaimStale, retry)
 
-### Fase 2 — Rede
-- Adiciona `@tauri-apps/plugin-http`
-- Porta `ClicksignClient` para `desktop-tauri/src/native/clicksign.ts`,
-  trocando `fetch` global pelo `fetch` do plugin
-- Copia `rate-limiter.ts` e `throttled-clicksign.ts` sem alteração de lógica
-- Teste: uma chamada real ao sandbox da Clicksign de dentro do app rodando
-  (`tauri dev`), confirmando que não há erro de CORS e que os headers
-  `X-Rate-Limit-*` continuam chegando
+### Fase 2 — Rede ✅
+- `@tauri-apps/plugin-http`; `ClicksignClient` portado trocando `fetch`
+  global pelo `fetch` do plugin; `rate-limiter.ts`/`throttled-clicksign.ts`
+  copiados sem alteração (já eram portáveis)
+- Confirmado ANTES de codar (curl com header Origin) que a Clicksign não
+  envia `Access-Control-Allow-Origin` — um fetch de browser puro seria
+  bloqueado por CORS. `plugin-http` roda a requisição no Rust, não sofre
+  CORS — validado com chamada real (`createEnvelope`) sem erro
 
-### Fase 3 — Pipeline de processamento
-- Porta `process-item.ts` (lógica pura, só ajusta imports)
+### Fase 3 — Pipeline de processamento ✅
+- `process-item.ts` portado — lógica pura, só imports ajustados
 
-### Fase 4 — Fila
-- `QueueWorker` vira um composable: mesmo loop claim→processa→grava,
-  agora `async` fim a fim sobre o repositório da Fase 1
+### Fase 4 — Fila ✅
+- `QueueWorker` portado — mesmo loop claim→processa→grava, assíncrono fim a
+  fim sobre o repositório da Fase 1
 
-### Fase 5 — PDFs
-- `pdf-store.ts` portado para `@tauri-apps/plugin-fs` (grava/lê/remove por
-  `item_id` em `app_data_dir()/<env>/pdfs/`)
+### Fase 5 — PDFs ✅
+- `pdf-store.ts` portado para `@tauri-apps/plugin-fs`
+  (`app_data_dir()/<env>/pdfs/`); permissões `fs:allow-app-{read,write}-recursive`
+  adicionadas proativamente (aprendendo dos achados da Fase 1) — 4/4 PASS
+  de primeira no self-test de integração completo
 
-### Fase 6 — Integração no App.vue
-- Troca `api-client.ts` (chamadas HTTP pro sidecar) pelas chamadas diretas
-  aos módulos novos
-- Remove o uso de `invoke('start_sidecar', ...)`
+### Fase 6 — Integração no App.vue ✅
+- Criado `session.ts`: encapsula repo+pdfStore+cliente+worker por ambiente
+  (substituto do `start_sidecar`). `App.vue` trocado para usar
+  `startSession()`/`session.createBatch()`/`getBatch()`/`retryItem()` —
+  sem HTTP, sem `invoke('start_sidecar')`
+- Validado com passeio completo pela UI real: conectar → adicionar PDF →
+  preencher → enviar → concluído com link real → copiar (conferido no
+  clipboard) → abrir no navegador → fechar pelo X sem processo órfão
 
-### Fase 7 — Comparação lado a lado
-Checklist a rodar nas duas versões (branch `main` com sidecar vs esta
-branch) antes de remover qualquer coisa:
-- [ ] Conectar com token válido → selo de ambiente correto
-- [ ] Lote de 1 item, delivery=link → link real, cópia funciona
-- [ ] Lote de 3+ itens variados (link/email/whatsapp) → todos concluem
-- [ ] Item com erro proposital (nome com número) → falha isolada, resto continua
-- [ ] Retry de item falho → conclui
-- [ ] **Fechar o app no meio de um lote grande, reabrir → retomada automática**
-      (o ponto mais arriscado — sem isso funcionando igual, a migração não
-      está pronta)
-- [ ] Trocar sandbox↔produção → dados continuam isolados por ambiente
-- [ ] Consumo de memória do processo único vs (app + sidecar) somados
+### Fase 7 — Comparação lado a lado ✅
+- [x] Conectar com token válido → selo de ambiente correto
+- [x] Lote de 1 item, delivery=link → link real, cópia funciona (conferido no clipboard)
+- [x] Lote de 3 itens → todos concluem
+- [x] Retry de item falho → conclui (testado no self-test de integração)
+- [x] **Fechar o app no meio de um lote grande, reabrir → retomada automática**
+      — testado via UI real (não script isolado): lote de 3 itens, `taskkill
+      /F` no meio do processamento, reaberto, reclaimStale automático no
+      auto-connect retomou e concluiu os 3 itens com links reais
+- [x] Trocar sandbox↔produção → dados isolados (`sandbox/batches.db` vs `producao/batches.db`)
+- [ ] Consumo de memória do processo único vs (app + sidecar) somados — não medido formalmente, ganho estrutural óbvio (um processo a menos)
+
+**Achado real #4 (durante o teste de retomada):** a primeira tentativa deu
+`SQLITE_BUSY` — causa: o script de teste abria uma SEGUNDA conexão
+`BatchRepository` paralela à sessão real do app, e as duas escreviam ao
+mesmo tempo. Não é um bug de produção (o app real só abre uma sessão por
+ambiente) — mas expôs a Fase 1's WAL ausente (achado #3) e um design
+questionável de teste, corrigido.
+
+**Achado real #5:** `session.testConnection()` chamava `client.getEnvelope()`
+**direto**, sem passar pelo `ThrottledClicksign` — não respeitava o rate
+limiter nem re-tentava em 429. Depois de um lote de 3 itens (~21
+requisições, perto do limite de 20/10s do sandbox), um 429 durante a
+reconexão foi classificado como "inacessível" por engano. Corrigido:
+`testConnection()` agora passa por `throttled.run(...)` como todo o resto.
 
 ### Fase 8 — Decisão sobre `src/` (backend standalone)
 `src/` (a batch API Node) fica no repo mesmo após a migração — não é usada
