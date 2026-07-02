@@ -59,6 +59,7 @@ function communicateEventsFor(delivery: Delivery, contactChannel: 'email' | 'wha
         document_signed: 'whatsapp',
       };
     case 'link':
+    case 'handwritten':
       // Envio manual: a Clicksign não notifica a solicitação de assinatura.
       return {
         signature_request: 'none',
@@ -66,6 +67,13 @@ function communicateEventsFor(delivery: Delivery, contactChannel: 'email' | 'wha
         document_signed: contactChannel,
       };
   }
+}
+
+/** Auth do requisito de autenticação: 'handwritten' dispensa token — a
+ *  própria assinatura desenhada na tela é a prova. Os demais usam o canal
+ *  de contato (token por e-mail ou WhatsApp). */
+function authMethodFor(delivery: Delivery, contactChannel: 'email' | 'whatsapp'): 'email' | 'whatsapp' | 'handwritten' {
+  return delivery === 'handwritten' ? 'handwritten' : contactChannel;
 }
 
 export async function processItem(
@@ -97,7 +105,12 @@ export async function processItem(
   await clicksign.run((c) => c.addQualificationRequirement(envelope.id, document.id, signer.id));
 
   await clicksign.run((c) =>
-    c.addAuthenticationRequirement(envelope.id, document.id, signer.id, contactChannel),
+    c.addAuthenticationRequirement(
+      envelope.id,
+      document.id,
+      signer.id,
+      authMethodFor(item.delivery, contactChannel),
+    ),
   );
 
   await clicksign.run((c) => c.activateEnvelope(envelope.id));

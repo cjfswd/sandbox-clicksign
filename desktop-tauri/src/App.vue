@@ -29,6 +29,7 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
   link: 'Somente link (envio manual)',
   email: 'E-mail (Clicksign envia)',
   whatsapp: 'WhatsApp (Clicksign envia)',
+  handwritten: 'Assinatura manuscrita (sem token)',
 };
 
 let store: Store;

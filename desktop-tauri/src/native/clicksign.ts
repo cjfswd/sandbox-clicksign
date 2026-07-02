@@ -209,12 +209,16 @@ export class ClicksignClient {
     });
   }
 
-  /** Requisito de autenticação: como o signatário prova a identidade (token por e-mail/SMS/WhatsApp). */
+  /**
+   * Requisito de autenticação: como o signatário prova a identidade. Token
+   * por e-mail/SMS/WhatsApp, ou `handwritten` — assinatura manuscrita como
+   * o próprio ponto de prova, sem enviar/exigir código de verificação.
+   */
   async addAuthenticationRequirement(
     envelopeId: string,
     documentId: string,
     signerId: string,
-    auth: 'email' | 'sms' | 'whatsapp' = 'email',
+    auth: 'email' | 'sms' | 'whatsapp' | 'handwritten' = 'email',
   ): Promise<JsonApiResource> {
     return this.addRequirement(envelopeId, {
       attributes: { action: 'provide_evidence', auth },

@@ -4,7 +4,7 @@
  * MIGRATION-PLAN.md); se divergir, o arquivo original é a fonte de verdade.
  */
 
-export type Delivery = 'email' | 'whatsapp' | 'link';
+export type Delivery = 'email' | 'whatsapp' | 'link' | 'handwritten';
 
 export interface Signer {
   name: string;
