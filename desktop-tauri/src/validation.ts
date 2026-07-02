@@ -3,7 +3,14 @@
  * (fail-fast, mesmos critérios) — reimplementada aqui porque o navegador
  * não decodifica base64 com Buffer.
  */
-import type { BatchItemPayload } from './api-client';
+import type { Delivery } from './native/batch.ts';
+
+export interface BatchItemPayload {
+  filename: string;
+  contentBase64: string;
+  signer: { name: string; email?: string; phoneNumber?: string };
+  delivery: Delivery;
+}
 
 export interface ItemValidationError {
   index: number;

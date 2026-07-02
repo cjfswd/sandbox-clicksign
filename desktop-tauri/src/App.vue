@@ -1,22 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { ask, open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { invoke } from '@tauri-apps/api/core';
-import {
-  createBatch,
-  getBatch,
-  retryItem,
-  testConnection,
-  type ApiConfig,
-  type BatchItemPayload,
-  type BatchItemResult,
-  type Delivery,
-} from './api-client';
-import { validateBatchItems } from './validation';
+import { startSession, type BatchSession, type Environment } from './native/session';
+import type { BatchItem, Delivery } from './native/batch';
+import { validateBatchItems, type BatchItemPayload } from './validation';
 
 interface Draft {
   path: string;
@@ -26,7 +17,7 @@ interface Draft {
   email: string;
   phone: string;
   delivery: Delivery;
-  status: BatchItemResult['status'] | 'idle';
+  status: BatchItem['status'] | 'idle';
   signUrl: string | null;
   errorMessage: string | null;
   /** Erro de copiar/abrir o link — separado de errorMessage (esse é do processamento na Clicksign). */
@@ -41,17 +32,13 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
 };
 
 let store: Store;
-// baseUrl/apiKey da batch API embutida (sidecar) — fixos, nunca digitados
-// pelo usuário; só o token da Clicksign é configurável.
-const config = reactive<ApiConfig>({ baseUrl: '', apiKey: '' });
+// Sessão nativa (repo + pdfStore + cliente Clicksign + worker) do ambiente
+// ativo — substitui o sidecar. Só o token da Clicksign é configurável.
+let session: BatchSession | null = null;
 const clicksignToken = ref('');
-const clicksignEnv = ref<'sandbox' | 'producao'>('sandbox');
-/** Ambiente que a batch API embutida está de fato rodando agora (para o selo no header). */
-const activeEnv = ref<'sandbox' | 'producao' | null>(null);
-const CLICKSIGN_BASE_URLS: Record<'sandbox' | 'producao', string> = {
-  sandbox: 'https://sandbox.clicksign.com',
-  producao: 'https://app.clicksign.com',
-};
+const clicksignEnv = ref<Environment>('sandbox');
+/** Ambiente que a sessão está de fato rodando agora (para o selo no header). */
+const activeEnv = ref<Environment | null>(null);
 const connStatus = ref<'idle' | 'testing' | 'ok' | 'chave-invalida' | 'inacessivel'>('idle');
 
 const drafts = ref<Draft[]>([]);
@@ -80,27 +67,13 @@ function onPhoneInput(draft: Draft, event: Event): void {
   draft.phone = formatPhone(raw);
 }
 
-/** A batch API embutida demora um instante para subir; tenta algumas vezes. */
-async function testConnectionWithRetry(attempts = 10, delayMs = 300): Promise<typeof connStatus.value> {
-  for (let i = 0; i < attempts; i++) {
-    const result = await testConnection(config);
-    if (result !== 'inacessivel' || i === attempts - 1) return result;
-    await new Promise((r) => setTimeout(r, delayMs));
-  }
-  return 'inacessivel';
-}
-
 onMounted(async () => {
-  const internal = await invoke<{ baseUrl: string; apiKey: string }>('internal_api_config');
-  config.baseUrl = internal.baseUrl;
-  config.apiKey = internal.apiKey;
-
   store = await load('config.json', { autoSave: true, defaults: {} });
   clicksignToken.value = (await store.get<string>('clicksignToken')) ?? '';
-  clicksignEnv.value = (await store.get<'sandbox' | 'producao'>('clicksignEnv')) ?? 'sandbox';
+  clicksignEnv.value = (await store.get<Environment>('clicksignEnv')) ?? 'sandbox';
 
   if (clicksignToken.value) {
-    // token já configurado em execução anterior — sobe a API sozinha, sem
+    // token já configurado em execução anterior — reconecta sozinho, sem
     // repetir a confirmação de produção (usuário já optou por isso antes)
     await saveAndConnect({ skipProductionConfirm: true });
   }
@@ -131,15 +104,12 @@ async function saveAndConnect(options: { skipProductionConfirm?: boolean } = {})
 
   connStatus.value = 'testing';
   try {
-    await invoke('start_sidecar', {
-      clicksignToken: token,
-      clicksignBaseUrl: CLICKSIGN_BASE_URLS[clicksignEnv.value],
-      clicksignEnv: clicksignEnv.value,
-    });
+    if (session) await session.stop(); // troca de ambiente: fecha a sessão anterior antes de abrir a nova
+    session = await startSession(clicksignEnv.value, token);
     activeEnv.value = clicksignEnv.value;
-    connStatus.value = await testConnectionWithRetry();
+    connStatus.value = await session.testConnection();
   } catch (error) {
-    batchStatus.value = `Falha ao iniciar a batch API embutida: ${String(error)}`;
+    batchStatus.value = `Falha ao conectar com a Clicksign: ${String(error)}`;
     batchTone.value = 'erro';
     connStatus.value = 'inacessivel';
   }
@@ -150,9 +120,9 @@ const connLabel = computed(() => {
     case 'ok':
       return 'Conectado ✓';
     case 'chave-invalida':
-      return 'Falha interna ao autenticar com a batch API embutida ✗';
+      return 'Token da Clicksign inválido ✗';
     case 'inacessivel':
-      return 'Não foi possível iniciar a batch API embutida ✗';
+      return 'Não foi possível conectar com a Clicksign ✗';
     case 'testing':
       return 'Conectando…';
     default:
@@ -212,6 +182,11 @@ function buildPayload(): BatchItemPayload[] {
 
 async function sendBatch(): Promise<void> {
   if (sending.value) return;
+  if (!session) {
+    batchStatus.value = 'Configure e conecte com a Clicksign antes de enviar.';
+    batchTone.value = 'erro';
+    return;
+  }
   if (drafts.value.length === 0) {
     batchStatus.value = 'Adicione ao menos um PDF antes de enviar.';
     batchTone.value = 'erro';
@@ -235,13 +210,15 @@ async function sendBatch(): Promise<void> {
   batchStatus.value = 'Enviando lote...';
   batchTone.value = 'neutro';
   try {
-    const { batchId } = await createBatch(config, payload);
-    activeBatchId = batchId;
+    const items = payload.map(({ filename, signer, delivery }) => ({ filename, signer, delivery }));
+    const pdfBase64ByIndex = payload.map((p) => p.contentBase64);
+    const batch = await session.createBatch(items, pdfBase64ByIndex);
+    activeBatchId = batch.id;
     drafts.value.forEach((d) => {
       d.status = 'pending';
       d.errorMessage = null;
     });
-    batchStatus.value = `Lote ${batchId.slice(0, 8)} em processamento...`;
+    batchStatus.value = `Lote ${batch.id.slice(0, 8)} em processamento...`;
     startPolling();
   } catch (error) {
     batchStatus.value = `Erro no envio: ${String(error)}`;
@@ -252,20 +229,25 @@ async function sendBatch(): Promise<void> {
 
 function startPolling(): void {
   pollTimer = setInterval(async () => {
-    if (!activeBatchId) return;
+    if (!activeBatchId || !session) return;
     try {
-      const status = await getBatch(config, activeBatchId);
+      const status = await session.getBatch(activeBatchId);
+      if (!status) return;
       status.items.forEach((item, index) => {
         const draft = drafts.value[index];
         if (!draft) return;
         draft.itemId = item.id;
         draft.status = item.status;
-        draft.signUrl = item.signUrl;
-        draft.errorMessage = item.errorMessage;
+        draft.signUrl = item.status === 'done' ? item.signUrl : null;
+        draft.errorMessage = item.status === 'failed' ? item.errorMessage : null;
       });
 
-      const { pending, processing, done, failed, total } = status.progress;
-      if (pending + processing === 0) {
+      const total = status.items.length;
+      const done = status.items.filter((i) => i.status === 'done').length;
+      const failed = status.items.filter((i) => i.status === 'failed').length;
+      const settled = done + failed;
+
+      if (settled === total) {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
         sending.value = false;
@@ -275,19 +257,19 @@ function startPolling(): void {
             : `Lote finalizado: ${done} ok, ${failed} falha(s).`;
         batchTone.value = failed === 0 ? 'ok' : 'erro';
       } else {
-        batchStatus.value = `Progresso: ${done + failed}/${total} concluídos...`;
+        batchStatus.value = `Progresso: ${settled}/${total} concluídos...`;
       }
     } catch (error) {
       batchStatus.value = `Erro ao consultar lote: ${String(error)}`;
       batchTone.value = 'erro';
     }
-  }, 2000);
+  }, 1000);
 }
 
 async function retryDraft(draft: Draft): Promise<void> {
-  if (!activeBatchId || !draft.itemId) return;
+  if (!activeBatchId || !draft.itemId || !session) return;
   try {
-    await retryItem(config, activeBatchId, draft.itemId);
+    await session.retryItem(activeBatchId, draft.itemId);
     draft.status = 'pending';
     draft.errorMessage = null;
     if (!pollTimer) {
