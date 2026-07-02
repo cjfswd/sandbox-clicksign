@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { load, type Store } from '@tauri-apps/plugin-store';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   createBatch,
   getBatch,
@@ -27,6 +28,8 @@ interface Draft {
   status: BatchItemResult['status'] | 'idle';
   signUrl: string | null;
   errorMessage: string | null;
+  /** Erro de copiar/abrir o link — separado de errorMessage (esse é do processamento na Clicksign). */
+  actionError: string | null;
   itemId: string | null;
 }
 
@@ -120,6 +123,7 @@ async function addPdfs(): Promise<void> {
       status: 'idle',
       signUrl: null,
       errorMessage: null,
+      actionError: null,
       itemId: null,
     });
   }
@@ -234,9 +238,33 @@ async function retryDraft(draft: Draft): Promise<void> {
   }
 }
 
+const justCopied = ref<string | null>(null); // path do draft copiado por último, para feedback "Copiado ✓"
+const justCopiedAll = ref(false);
+
 async function copyLink(draft: Draft): Promise<void> {
   if (!draft.signUrl) return;
-  await writeText(draft.signUrl);
+  draft.actionError = null;
+  try {
+    await writeText(draft.signUrl);
+    justCopied.value = draft.path;
+    setTimeout(() => {
+      if (justCopied.value === draft.path) justCopied.value = null;
+    }, 2000);
+  } catch (error) {
+    // sem isso, uma falha na área de transferência (ex.: permissão do SO,
+    // outro app segurando o clipboard) passava em silêncio total
+    draft.actionError = `Falha ao copiar o link: ${String(error)}`;
+  }
+}
+
+async function openLink(draft: Draft): Promise<void> {
+  if (!draft.signUrl) return;
+  draft.actionError = null;
+  try {
+    await openUrl(draft.signUrl);
+  } catch (error) {
+    draft.actionError = `Falha ao abrir o link no navegador: ${String(error)}`;
+  }
 }
 
 async function copyAllLinks(): Promise<void> {
@@ -248,9 +276,16 @@ async function copyAllLinks(): Promise<void> {
     batchTone.value = 'erro';
     return;
   }
-  await writeText(lines.join('\n'));
-  batchStatus.value = `${lines.length} link(s) copiados para a área de transferência.`;
-  batchTone.value = 'ok';
+  try {
+    await writeText(lines.join('\n'));
+    batchStatus.value = `${lines.length} link(s) copiados para a área de transferência.`;
+    batchTone.value = 'ok';
+    justCopiedAll.value = true;
+    setTimeout(() => (justCopiedAll.value = false), 2000);
+  } catch (error) {
+    batchStatus.value = `Falha ao copiar os links: ${String(error)}`;
+    batchTone.value = 'erro';
+  }
 }
 
 function statusLabel(draft: Draft): string {
@@ -320,7 +355,7 @@ function statusClass(draft: Draft): string {
         Enviar lote
       </button>
       <button class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium hover:bg-slate-200" @click="copyAllLinks">
-        Copiar todos os links
+        {{ justCopiedAll ? 'Copiado ✓' : 'Copiar todos os links' }}
       </button>
       <span class="ml-auto text-xs text-slate-500">Documentos no lote: {{ drafts.length }}</span>
     </div>
@@ -339,7 +374,14 @@ function statusClass(draft: Draft): string {
             class="ml-auto rounded bg-slate-100 px-2 py-0.5 text-xs hover:bg-slate-200"
             @click="copyLink(draft)"
           >
-            Copiar link
+            {{ justCopied === draft.path ? 'Copiado ✓' : 'Copiar link' }}
+          </button>
+          <button
+            v-if="draft.signUrl"
+            class="rounded bg-slate-100 px-2 py-0.5 text-xs hover:bg-slate-200"
+            @click="openLink(draft)"
+          >
+            Abrir no navegador
           </button>
           <button
             v-if="draft.status === 'failed'"
@@ -350,6 +392,14 @@ function statusClass(draft: Draft): string {
           </button>
           <button class="text-red-500 hover:text-red-700" @click="removeDraft(index)">✕</button>
         </div>
+        <p v-if="draft.signUrl" class="mb-2 break-all">
+          <a
+            href="#"
+            class="text-xs text-blue-600 underline hover:text-blue-800"
+            @click.prevent="openLink(draft)"
+          >{{ draft.signUrl }}</a>
+        </p>
+        <p v-if="draft.actionError" class="mb-2 text-xs text-red-600">{{ draft.actionError }}</p>
         <div class="flex flex-wrap gap-2">
           <input
             v-model="draft.name"

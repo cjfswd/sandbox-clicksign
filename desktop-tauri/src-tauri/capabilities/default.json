@@ -11,6 +11,10 @@
     "fs:default",
     "fs:allow-read-file",
     "clipboard-manager:default",
-    "store:default"
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
+    "store:default",
+    "opener:default",
+    "opener:allow-open-url"
   ]
 }
