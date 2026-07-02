@@ -5,6 +5,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
 import {
   createBatch,
   getBatch,
@@ -40,7 +41,15 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
 };
 
 let store: Store;
-const config = reactive<ApiConfig>({ baseUrl: 'http://localhost:3000', apiKey: '' });
+// baseUrl/apiKey da batch API embutida (sidecar) — fixos, nunca digitados
+// pelo usuário; só o token da Clicksign é configurável.
+const config = reactive<ApiConfig>({ baseUrl: '', apiKey: '' });
+const clicksignToken = ref('');
+const clicksignEnv = ref<'sandbox' | 'producao'>('sandbox');
+const CLICKSIGN_BASE_URLS: Record<'sandbox' | 'producao', string> = {
+  sandbox: 'https://sandbox.clicksign.com',
+  producao: 'https://app.clicksign.com',
+};
 const connStatus = ref<'idle' | 'testing' | 'ok' | 'chave-invalida' | 'inacessivel'>('idle');
 
 const drafts = ref<Draft[]>([]);
@@ -69,19 +78,52 @@ function onPhoneInput(draft: Draft, event: Event): void {
   draft.phone = formatPhone(raw);
 }
 
+/** A batch API embutida demora um instante para subir; tenta algumas vezes. */
+async function testConnectionWithRetry(attempts = 10, delayMs = 300): Promise<typeof connStatus.value> {
+  for (let i = 0; i < attempts; i++) {
+    const result = await testConnection(config);
+    if (result !== 'inacessivel' || i === attempts - 1) return result;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return 'inacessivel';
+}
+
 onMounted(async () => {
+  const internal = await invoke<{ baseUrl: string; apiKey: string }>('internal_api_config');
+  config.baseUrl = internal.baseUrl;
+  config.apiKey = internal.apiKey;
+
   store = await load('config.json', { autoSave: true, defaults: {} });
-  config.baseUrl = (await store.get<string>('baseUrl')) ?? config.baseUrl;
-  config.apiKey = (await store.get<string>('apiKey')) ?? '';
+  clicksignToken.value = (await store.get<string>('clicksignToken')) ?? '';
+  clicksignEnv.value = (await store.get<'sandbox' | 'producao'>('clicksignEnv')) ?? 'sandbox';
+
+  if (clicksignToken.value) {
+    // token já configurado em execução anterior — sobe a API sozinha
+    await saveAndConnect();
+  }
 });
 
-async function saveAndTest(): Promise<void> {
-  await store.set('baseUrl', config.baseUrl.trim().replace(/\/+$/, ''));
-  await store.set('apiKey', config.apiKey.trim());
-  config.baseUrl = config.baseUrl.trim().replace(/\/+$/, '');
-  config.apiKey = config.apiKey.trim();
+async function saveAndConnect(): Promise<void> {
+  const token = clicksignToken.value.trim();
+  if (!token) {
+    connStatus.value = 'idle';
+    return;
+  }
+  await store.set('clicksignToken', token);
+  await store.set('clicksignEnv', clicksignEnv.value);
+
   connStatus.value = 'testing';
-  connStatus.value = await testConnection(config);
+  try {
+    await invoke('start_sidecar', {
+      clicksignToken: token,
+      clicksignBaseUrl: CLICKSIGN_BASE_URLS[clicksignEnv.value],
+    });
+    connStatus.value = await testConnectionWithRetry();
+  } catch (error) {
+    batchStatus.value = `Falha ao iniciar a batch API embutida: ${String(error)}`;
+    batchTone.value = 'erro';
+    connStatus.value = 'inacessivel';
+  }
 }
 
 const connLabel = computed(() => {
@@ -89,11 +131,11 @@ const connLabel = computed(() => {
     case 'ok':
       return 'Conectado ✓';
     case 'chave-invalida':
-      return 'API key inválida ✗';
+      return 'Falha interna ao autenticar com a batch API embutida ✗';
     case 'inacessivel':
-      return 'API inacessível — confira o endereço ✗';
+      return 'Não foi possível iniciar a batch API embutida ✗';
     case 'testing':
-      return 'Testando…';
+      return 'Conectando…';
     default:
       return '';
   }
@@ -319,25 +361,23 @@ function statusClass(draft: Draft): string {
     </header>
 
     <section class="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <h2 class="mb-2 text-sm font-bold">Configuração da API</h2>
+      <h2 class="mb-2 text-sm font-bold">Conexão com a Clicksign</h2>
       <div class="flex flex-wrap items-center gap-2">
         <input
-          v-model="config.baseUrl"
-          type="text"
-          placeholder="URL da API (ex.: http://localhost:3000)"
+          v-model="clicksignToken"
+          type="password"
+          placeholder="Token de acesso da Clicksign"
           class="w-72 rounded border border-slate-300 px-2 py-1 text-sm"
         />
-        <input
-          v-model="config.apiKey"
-          type="password"
-          placeholder="API key"
-          class="w-56 rounded border border-slate-300 px-2 py-1 text-sm"
-        />
+        <select v-model="clicksignEnv" class="rounded border border-slate-300 px-2 py-1 text-sm">
+          <option value="sandbox">Sandbox (testes)</option>
+          <option value="producao">Produção</option>
+        </select>
         <button
           class="rounded bg-slate-100 px-3 py-1 text-sm font-medium hover:bg-slate-200"
-          @click="saveAndTest"
+          @click="saveAndConnect"
         >
-          Salvar e testar
+          Salvar e conectar
         </button>
         <span class="text-xs" :class="connTone">{{ connLabel }}</span>
       </div>

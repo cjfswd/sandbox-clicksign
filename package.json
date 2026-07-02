@@ -9,7 +9,8 @@
     "create": "node --env-file=.env src/create-envelope.ts",
     "status": "node --env-file=.env src/envelope-status.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:sea": "node scripts/build-sea.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",
@@ -20,6 +21,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"
   }
