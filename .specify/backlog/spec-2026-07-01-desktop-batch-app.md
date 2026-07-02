@@ -16,12 +16,14 @@ distribuir os links de assinatura.
 O app **nunca** fala diretamente com a Clicksign: consome exclusivamente a batch API,
 autenticado por API key. O token da Clicksign permanece só no servidor.
 
-> **Decisão de framework (pendente de verificação):** o usuário indicou o framework
-> **Perry** (https://github.com/PerryTS/perry) no lugar de Tauri. O repositório ainda
-> não pôde ser verificado (indisponibilidade de rede na sessão). O plan desta spec DEVE
-> começar validando: existência/maturidade do Perry, capacidade de gerar instalador
-> Windows autossuficiente e modelo de UI. Fallback registrado: Tauri 2. A spec abaixo é
-> agnóstica de framework — nenhum critério depende dessa escolha.
+> **Decisão de framework (resolvida em 2026-07-01):** o Perry
+> (https://github.com/PerryTS/perry, compilador TS→nativo via SWC+LLVM) foi avaliado:
+> o compilador suporta Windows, mas a camada de UI desktop (`perry-react`) hoje gera
+> apenas apps macOS — Win32 está no roadmap ("eventually"). Decisão do usuário:
+> **implementar a GUI em Tauri 2 agora** e migrar para perry-react quando o suporte
+> Win32 for lançado. A spec permanece agnóstica de framework para facilitar essa
+> migração: lógica de negócio (cliente da API, validação, polling) deve ficar em
+> módulos TypeScript puros, separados da camada de UI.
 
 ## Usuário afetado
 
