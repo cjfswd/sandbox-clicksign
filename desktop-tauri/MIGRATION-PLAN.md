@@ -1,7 +1,7 @@
 # Plano: eliminar o sidecar Node, tudo dentro do `app.exe`
 
 **Branch:** `feat/desktop-tauri-no-sidecar`
-**Status:** Fases 1-7 concluídas e validadas. Fases 8-9 pendentes de decisão do usuário (removem/mantêm código em uso na `main`).
+**Status:** Fases 1-9 concluídas e validadas. Migração completa — sidecar removido, app roda 100% nativo.
 
 ## Objetivo
 
@@ -112,20 +112,40 @@ requisições, perto do limite de 20/10s do sandbox), um 429 durante a
 reconexão foi classificado como "inacessível" por engano. Corrigido:
 `testConnection()` agora passa por `throttled.run(...)` como todo o resto.
 
-### Fase 8 — Decisão sobre `src/` (backend standalone)
-`src/` (a batch API Node) fica no repo mesmo após a migração — não é usada
+### Fase 8 — Decisão sobre `src/` (backend standalone) ✅
+**Decisão: mantida.** `src/` (a batch API Node) fica no repo — não é usada
 pelo desktop app, mas continua sendo o backend caso um dia se precise dela
-como serviço reaproveitável (outra ferramenta, servidor compartilhado). Se
-não fizer sentido mantê-la, decidir isso separadamente — não é escopo desta
-migração.
+como serviço reaproveitável (outra ferramenta, servidor compartilhado).
+Código testado (74 testes), sem custo de manutenção real por ficar parado.
+Único ajuste: removido `scripts/build-sea.mjs` (empacotamento em SEA) por
+não ter mais consumidor — se um dia for preciso empacotar `src/` como
+executável de novo, o histórico do git tem o script pronto para recuperar.
 
-### Fase 9 — Remoção do código antigo (só depois da Fase 7 ✓)
-- `lib.rs`: remove `SidecarState`, `start_sidecar`, `kill_existing`, `tauri-plugin-shell`
-- Remove `desktop-tauri/prepare-sidecar.mjs`, `desktop-tauri/src-tauri/binaries/`
-- Remove `scripts/build-sea.mjs` e as devDependencies `esbuild`/`postject`
-  da raiz **se** `src/` não precisar mais delas (reavaliar conforme Fase 8)
-- Remove `api-client.ts` antigo (HTTP) e `internal_api_config` do `lib.rs`
-- README do `desktop-tauri` reescrito para a arquitetura nova
+### Fase 9 — Remoção do código antigo ✅
+- `lib.rs`: removidos `SidecarState`, `start_sidecar`, `kill_existing`,
+  `internal_api_config`, import/registro de `tauri-plugin-shell`,
+  `.manage(SidecarState::default())`, `.invoke_handler(...)` (nenhum
+  comando IPC restante — app não expõe mais `#[tauri::command]` nenhum) e a
+  lógica de `RunEvent::Exit`/`ExitRequested` que matava o sidecar
+- `Cargo.toml`: removida a dependência `tauri-plugin-shell = "2"`
+- `tauri.conf.json`: removido `bundle.externalBin`
+- Removidos `desktop-tauri/prepare-sidecar.mjs`, `desktop-tauri/src-tauri/binaries/`,
+  o script npm `prepare-sidecar` e `desktop-tauri/src/api-client.ts` (cliente
+  HTTP do sidecar, confirmado sem nenhum import restante)
+- Removidos `scripts/build-sea.mjs` e as devDependencies `esbuild`/`postject`
+  da raiz (decisão da Fase 8)
+- README do `desktop-tauri` reescrito para a arquitetura nova (nada de
+  sidecar/SEA, descreve plugin-sql + plugin-http rodando no mesmo processo)
+
+**Validação real pós-remoção:** `cargo check` limpo, `vue-tsc --noEmit`
+limpo, `npx tauri dev` compilado e executado do zero — reconexão automática
+ao sandbox (token salvo, `testConnection()` via `throttled.run`), PDF
+adicionado via `plugin-fs`, validação de nome sem números pegou um erro de
+digitação real (funcionando), lote de 1 item enviado e concluído com link
+real da Clicksign
+(`https://sandbox.clicksign.com/notarial/widget/signatures/.../redirect`).
+Nenhum processo Node sidecar envolvido em nenhum momento — confirmado via
+`tasklist` antes/depois (só `app.exe`, sem `batch-api.exe`).
 
 ## Riscos conhecidos
 

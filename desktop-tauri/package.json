@@ -5,7 +5,6 @@
   "type": "module",
   "description": "App desktop (Tauri 2 + Vue 3) para envio em lote de documentos via batch API Clicksign",
   "scripts": {
-    "prepare-sidecar": "node prepare-sidecar.mjs",
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
