@@ -137,6 +137,7 @@ pub fn run() {
                 .add_migrations("sqlite:producao/batches.db", batch_migrations())
                 .build(),
         )
+        .plugin(tauri_plugin_http::init())
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![start_sidecar, internal_api_config])
         .setup(|app| {
