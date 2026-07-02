@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
-import { open } from '@tauri-apps/plugin-dialog';
+import { ask, open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { load, type Store } from '@tauri-apps/plugin-store';
@@ -46,6 +46,8 @@ let store: Store;
 const config = reactive<ApiConfig>({ baseUrl: '', apiKey: '' });
 const clicksignToken = ref('');
 const clicksignEnv = ref<'sandbox' | 'producao'>('sandbox');
+/** Ambiente que a batch API embutida está de fato rodando agora (para o selo no header). */
+const activeEnv = ref<'sandbox' | 'producao' | null>(null);
 const CLICKSIGN_BASE_URLS: Record<'sandbox' | 'producao', string> = {
   sandbox: 'https://sandbox.clicksign.com',
   producao: 'https://app.clicksign.com',
@@ -98,17 +100,32 @@ onMounted(async () => {
   clicksignEnv.value = (await store.get<'sandbox' | 'producao'>('clicksignEnv')) ?? 'sandbox';
 
   if (clicksignToken.value) {
-    // token já configurado em execução anterior — sobe a API sozinha
-    await saveAndConnect();
+    // token já configurado em execução anterior — sobe a API sozinha, sem
+    // repetir a confirmação de produção (usuário já optou por isso antes)
+    await saveAndConnect({ skipProductionConfirm: true });
   }
 });
 
-async function saveAndConnect(): Promise<void> {
+async function saveAndConnect(options: { skipProductionConfirm?: boolean } = {}): Promise<void> {
   const token = clicksignToken.value.trim();
   if (!token) {
     connStatus.value = 'idle';
     return;
   }
+
+  // Produção emite documentos com valor legal — confirmar antes de trocar
+  // para lá manualmente (não na reconexão automática ao abrir o app).
+  if (clicksignEnv.value === 'producao' && !options.skipProductionConfirm) {
+    const confirmed = await ask(
+      'Você está prestes a conectar em PRODUÇÃO. Documentos enviados a partir de agora terão valor legal e serão cobrados. Continuar?',
+      { title: 'Confirmar ambiente de produção', kind: 'warning' },
+    );
+    if (!confirmed) {
+      clicksignEnv.value = activeEnv.value ?? 'sandbox';
+      return;
+    }
+  }
+
   await store.set('clicksignToken', token);
   await store.set('clicksignEnv', clicksignEnv.value);
 
@@ -117,7 +134,9 @@ async function saveAndConnect(): Promise<void> {
     await invoke('start_sidecar', {
       clicksignToken: token,
       clicksignBaseUrl: CLICKSIGN_BASE_URLS[clicksignEnv.value],
+      clicksignEnv: clicksignEnv.value,
     });
+    activeEnv.value = clicksignEnv.value;
     connStatus.value = await testConnectionWithRetry();
   } catch (error) {
     batchStatus.value = `Falha ao iniciar a batch API embutida: ${String(error)}`;
@@ -355,9 +374,18 @@ function statusClass(draft: Draft): string {
 
 <template>
   <div class="min-h-screen bg-slate-50 p-6 text-slate-900">
-    <header class="mb-4">
-      <h1 class="text-xl font-extrabold text-blue-700">HealthMais Assinaturas</h1>
-      <p class="text-xs text-slate-500">Envio em lote de documentos para assinatura via Clicksign</p>
+    <header class="mb-4 flex items-center gap-3">
+      <div>
+        <h1 class="text-xl font-extrabold text-blue-700">HealthMais Assinaturas</h1>
+        <p class="text-xs text-slate-500">Envio em lote de documentos para assinatura via Clicksign</p>
+      </div>
+      <span
+        v-if="activeEnv"
+        class="rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide"
+        :class="activeEnv === 'producao' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'"
+      >
+        {{ activeEnv === 'producao' ? '⚠ Produção — valor legal' : 'Sandbox — testes' }}
+      </span>
     </header>
 
     <section class="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -375,7 +403,7 @@ function statusClass(draft: Draft): string {
         </select>
         <button
           class="rounded bg-slate-100 px-3 py-1 text-sm font-medium hover:bg-slate-200"
-          @click="saveAndConnect"
+          @click="() => saveAndConnect()"
         >
           Salvar e conectar
         </button>

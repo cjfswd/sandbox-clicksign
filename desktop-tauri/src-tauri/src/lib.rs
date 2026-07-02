@@ -24,13 +24,22 @@ async fn start_sidecar(
     state: State<'_, SidecarState>,
     clicksign_token: String,
     clicksign_base_url: String,
+    clicksign_env: String,
 ) -> Result<(), String> {
     kill_existing(&state);
+
+    // Sandbox e produção NUNCA compartilham banco/PDFs — evita misturar
+    // lotes de teste com envios reais. Valida contra allowlist (o valor
+    // vira componente de path).
+    if clicksign_env != "sandbox" && clicksign_env != "producao" {
+        return Err(format!("Ambiente inválido: {clicksign_env}"));
+    }
 
     let data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("Não foi possível resolver o diretório de dados do app: {e}"))?;
+        .map_err(|e| format!("Não foi possível resolver o diretório de dados do app: {e}"))?
+        .join(&clicksign_env);
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Não foi possível criar o diretório de dados: {e}"))?;
 
