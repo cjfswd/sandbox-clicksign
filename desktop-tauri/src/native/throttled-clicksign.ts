@@ -83,6 +83,7 @@ export class ThrottledClicksign {
   }
 }
 
+/** true só para 429 da Clicksign — outros erros (4xx/5xx/rede) sobem direto, sem retry. */
 function isRateLimit(error: unknown): error is ClicksignError {
   return error instanceof ClicksignError && error.status === 429;
 }

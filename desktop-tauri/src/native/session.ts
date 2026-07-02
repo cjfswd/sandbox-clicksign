@@ -29,11 +29,13 @@ export interface BatchSession {
   stop(): Promise<void>;
 }
 
+/** Host da API por ambiente — nunca mesclar: sandbox e produção são contas/dados totalmente separados na Clicksign. */
 const CLICKSIGN_BASE_URLS: Record<Environment, string> = {
   sandbox: 'https://sandbox.clicksign.com',
   producao: 'https://app.clicksign.com',
 };
 
+/** Monta repo + pdfStore + cliente + worker do ambiente escolhido e já liga o worker (retomando itens presos). */
 export async function startSession(env: Environment, clicksignToken: string): Promise<BatchSession> {
   const baseUrl = CLICKSIGN_BASE_URLS[env];
   const repo = await BatchRepository.load(`${env}/batches.db`);

@@ -26,6 +26,7 @@ export class TokenBucket {
     this.windowMs = config.windowMs;
   }
 
+  /** Resolve na hora se há vaga; senão entra na fila de espera até uma abrir. */
   async acquire(): Promise<void> {
     if (this.waiters.length === 0 && this.tryAcquire()) return;
     await new Promise<void>((resolve) => {
@@ -34,6 +35,7 @@ export class TokenBucket {
     });
   }
 
+  /** Tenta reservar uma vaga agora; true e registra o timestamp se couber na janela. */
   private tryAcquire(): boolean {
     this.prune();
     if (this.timestamps.length >= this.capacity) return false;
@@ -41,6 +43,7 @@ export class TokenBucket {
     return true;
   }
 
+  /** Descarta timestamps mais velhos que a janela atual. */
   private prune(): void {
     const cutoff = Date.now() - this.windowMs;
     while (this.timestamps.length > 0 && this.timestamps[0]! <= cutoff) {
@@ -48,6 +51,7 @@ export class TokenBucket {
     }
   }
 
+  /** Agenda a próxima tentativa de liberar quem está esperando, no momento em que a vaga mais antiga expira. */
   private scheduleRelease(): void {
     if (this.timer !== null) return;
     this.prune();

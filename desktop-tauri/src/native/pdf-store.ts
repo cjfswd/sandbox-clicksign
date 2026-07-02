@@ -23,28 +23,34 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export class PdfStore {
+  /** `dir` é o caminho absoluto de `<app_data_dir>/<env>/pdfs`, resolvido uma vez em load(). */
   private constructor(private readonly dir: string) {}
 
+  /** Resolve o diretório de PDFs do ambiente (não cria ainda — save() cria sob demanda). */
   static async load(env: 'sandbox' | 'producao'): Promise<PdfStore> {
     const dir = await join(await appDataDir(), env, 'pdfs');
     return new PdfStore(dir);
   }
 
+  /** Grava o PDF do item em disco, criando o diretório na primeira vez. */
   async save(itemId: string, contentBase64: string): Promise<void> {
     if (!(await exists(this.dir))) await mkdir(this.dir, { recursive: true });
     await writeFile(await this.pathFor(itemId), base64ToBytes(contentBase64));
   }
 
+  /** Lê o PDF do item de volta como base64, para anexar ao envelope da Clicksign. */
   async readBase64(itemId: string): Promise<string> {
     const bytes = await readFile(await this.pathFor(itemId));
     return bytesToBase64(bytes);
   }
 
+  /** Apaga o PDF do item (chamado pelo worker ao concluir, para não acumular disco). */
   async remove(itemId: string): Promise<void> {
     const path = await this.pathFor(itemId);
     if (await exists(path)) await remove(path);
   }
 
+  /** Caminho do arquivo de um item: `<dir>/<itemId>.pdf`. */
   private pathFor(itemId: string): Promise<string> {
     return join(this.dir, `${itemId}.pdf`);
   }

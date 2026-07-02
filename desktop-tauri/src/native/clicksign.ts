@@ -62,6 +62,7 @@ export interface RateLimitInfo {
   resetAtMs: number | null;
 }
 
+/** Lê os três headers de rate limit de uma resposta; qualquer um ausente/inválido vira null. */
 function parseRateLimitHeaders(headers: Headers): RateLimitInfo {
   const toInt = (value: string | null): number | null => {
     if (value === null) return null;
@@ -104,6 +105,7 @@ export class ClicksignClient {
     return this.lastRateLimitInfo;
   }
 
+  /** Faz UMA requisição HTTP à Clicksign; guarda o rate limit visto e lança ClicksignError em qualquer !ok. */
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await fetch(`${this.config.baseUrl}${path}`, {
       method,
@@ -129,6 +131,7 @@ export class ClicksignClient {
     return JSON.parse(text) as T;
   }
 
+  /** Cria o envelope (contêiner do lote de assinatura) em estado 'draft'. */
   async createEnvelope(name: string): Promise<JsonApiResource<EnvelopeAttributes>> {
     const result = await this.request<JsonApiDocument<JsonApiResource<EnvelopeAttributes>>>(
       'POST',
@@ -138,6 +141,7 @@ export class ClicksignClient {
     return result.data;
   }
 
+  /** Anexa o PDF (como data URI base64) ao envelope. */
   async addDocument(
     envelopeId: string,
     filename: string,
@@ -159,6 +163,7 @@ export class ClicksignClient {
     return result.data;
   }
 
+  /** Registra o signatário no envelope, com os canais de notificação (communicate_events) já resolvidos. */
   async addSigner(
     envelopeId: string,
     signer: {
@@ -227,6 +232,7 @@ export class ClicksignClient {
     });
   }
 
+  /** POST genérico de requirement — addQualificationRequirement e addAuthenticationRequirement só variam attributes. */
   private async addRequirement(
     envelopeId: string,
     params: {
@@ -268,6 +274,7 @@ export class ClicksignClient {
     return result.data;
   }
 
+  /** Busca o envelope por id — usada por testConnection só para validar token/rede (ignora um 404). */
   async getEnvelope(envelopeId: string): Promise<JsonApiResource<EnvelopeAttributes>> {
     const result = await this.request<JsonApiDocument<JsonApiResource<EnvelopeAttributes>>>(
       'GET',
@@ -276,6 +283,7 @@ export class ClicksignClient {
     return result.data;
   }
 
+  /** Lista os signatários de um envelope (não usado no fluxo atual — utilitário de depuração). */
   async listSigners(envelopeId: string): Promise<Array<JsonApiResource<SignerAttributes>>> {
     const result = await this.request<JsonApiDocument<Array<JsonApiResource<SignerAttributes>>>>(
       'GET',

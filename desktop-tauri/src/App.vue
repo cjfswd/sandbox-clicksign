@@ -9,22 +9,29 @@ import { startSession, type BatchSession, type Environment } from './native/sess
 import type { BatchItem, Delivery } from './native/batch';
 import { validateBatchItems, type BatchItemPayload } from './validation';
 
+/** Um documento na tela, do "adicionado" até "concluído" — existe antes do item existir no backend. */
 interface Draft {
+  /** Caminho no disco do usuário; usado como :key da linha (é estável e único por PDF escolhido). */
   path: string;
   filename: string;
+  /** Conteúdo bruto do PDF, lido uma vez ao adicionar (convertido para base64 só no envio). */
   bytes: Uint8Array;
   name: string;
   email: string;
+  /** Já formatado (11) 99999-9999 — ver formatPhone; dígitos puros são extraídos no envio. */
   phone: string;
   delivery: Delivery;
+  /** 'idle' até o lote ser enviado; depois espelha o status real do item (pending/processing/done/failed). */
   status: BatchItem['status'] | 'idle';
   signUrl: string | null;
   errorMessage: string | null;
   /** Erro de copiar/abrir o link — separado de errorMessage (esse é do processamento na Clicksign). */
   actionError: string | null;
+  /** Preenchido só depois que o lote é criado — liga este draft ao item real no banco (para retry). */
   itemId: string | null;
 }
 
+/** Rótulos exibidos no select de cada linha — uma entrada por Delivery. */
 const DELIVERY_LABELS: Record<Delivery, string> = {
   link: 'Somente link (envio manual)',
   email: 'E-mail (Clicksign envia)',
@@ -32,29 +39,41 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
   handwritten: 'Assinatura manuscrita (sem token)',
 };
 
+/** Store persistente (plugin-store) com token e ambiente salvos entre execuções — config.json em app_data_dir. */
 let store: Store;
 // Sessão nativa (repo + pdfStore + cliente Clicksign + worker) do ambiente
 // ativo — substitui o sidecar. Só o token da Clicksign é configurável.
 let session: BatchSession | null = null;
+/** Campo de token digitado na UI (não confundir com o token realmente em uso pela sessão ativa). */
 const clicksignToken = ref('');
+/** Ambiente selecionado no dropdown — pode divergir de activeEnv enquanto a troca não é confirmada. */
 const clicksignEnv = ref<Environment>('sandbox');
 /** Ambiente que a sessão está de fato rodando agora (para o selo no header). */
 const activeEnv = ref<Environment | null>(null);
+/** Resultado do último testConnection(); 'idle' antes de qualquer tentativa. */
 const connStatus = ref<'idle' | 'testing' | 'ok' | 'chave-invalida' | 'inacessivel'>('idle');
 
+/** Um item por linha da UI, na mesma ordem enviada ao backend (index usado para casar com o resultado do polling). */
 const drafts = ref<Draft[]>([]);
+/** true enquanto o lote atual ainda tem item pending/processing (desabilita o botão "Enviar lote"). */
 const sending = ref(false);
+/** Mensagem exibida no rodapé da tela. */
 const batchStatus = ref('Adicione PDFs para montar o lote.');
+/** Cor do rodapé — controlada junto com batchStatus. */
 const batchTone = ref<'ok' | 'erro' | 'neutro'>('neutro');
+/** Id do lote em processamento; null antes do primeiro envio. */
 let activeBatchId: string | null = null;
+/** Handle do setInterval do polling — null quando não há polling ativo. */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+/** Bytes crus do PDF (lidos via plugin-fs) → base64, formato que a Clicksign espera. */
 const toBase64 = (bytes: Uint8Array): string => {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 };
 
+/** Máscara (11) 99999-9999 aplicada aos dígitos conforme o usuário digita. */
 function formatPhone(digits: string): string {
   const d = digits.replace(/\D/g, '').slice(0, 11);
   if (d.length > 6) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
@@ -63,11 +82,13 @@ function formatPhone(digits: string): string {
   return '';
 }
 
+/** Handler do campo de telefone: usa :value (não v-model) porque o valor exibido é a versão mascarada. */
 function onPhoneInput(draft: Draft, event: Event): void {
   const raw = (event.target as HTMLInputElement).value;
   draft.phone = formatPhone(raw);
 }
 
+/** Carrega token/ambiente salvos e reconecta sozinho se já havia um token configurado. */
 onMounted(async () => {
   store = await load('config.json', { autoSave: true, defaults: {} });
   clicksignToken.value = (await store.get<string>('clicksignToken')) ?? '';
@@ -80,6 +101,7 @@ onMounted(async () => {
   }
 });
 
+/** Salva token/ambiente no store, encerra a sessão anterior (se houver) e abre uma nova sessão nativa. */
 async function saveAndConnect(options: { skipProductionConfirm?: boolean } = {}): Promise<void> {
   const token = clicksignToken.value.trim();
   if (!token) {
@@ -116,6 +138,7 @@ async function saveAndConnect(options: { skipProductionConfirm?: boolean } = {})
   }
 }
 
+/** Texto do selo de status ao lado do botão "Salvar e conectar". */
 const connLabel = computed(() => {
   switch (connStatus.value) {
     case 'ok':
@@ -134,6 +157,7 @@ const connTone = computed(() =>
   connStatus.value === 'ok' ? 'text-emerald-600' : connStatus.value === 'testing' ? 'text-slate-400' : 'text-red-600',
 );
 
+/** Abre o seletor nativo de arquivos e adiciona cada PDF escolhido como um novo draft (item ainda não enviado). */
 async function addPdfs(): Promise<void> {
   const selected = await open({
     multiple: true,
@@ -163,11 +187,13 @@ async function addPdfs(): Promise<void> {
   batchTone.value = 'neutro';
 }
 
+/** Remove um draft do lote (antes do envio) e atualiza o contador exibido. */
 function removeDraft(index: number): void {
   drafts.value.splice(index, 1);
   batchStatus.value = `${drafts.value.length} documento(s) no lote.`;
 }
 
+/** Converte os drafts da UI para o formato aceito por validateBatchItems/createBatch. */
 function buildPayload(): BatchItemPayload[] {
   return drafts.value.map((d) => ({
     filename: d.filename,
@@ -181,6 +207,7 @@ function buildPayload(): BatchItemPayload[] {
   }));
 }
 
+/** Valida os drafts, cria o lote na sessão nativa e liga o polling de progresso. */
 async function sendBatch(): Promise<void> {
   if (sending.value) return;
   if (!session) {
@@ -228,6 +255,7 @@ async function sendBatch(): Promise<void> {
   }
 }
 
+/** Consulta o lote a cada 1s até todo item terminar (done ou failed) e atualiza a UI. */
 function startPolling(): void {
   pollTimer = setInterval(async () => {
     if (!activeBatchId || !session) return;
@@ -267,6 +295,7 @@ function startPolling(): void {
   }, 1000);
 }
 
+/** Reenfileira um item que falhou e religa o polling se ele já tinha parado. */
 async function retryDraft(draft: Draft): Promise<void> {
   if (!activeBatchId || !draft.itemId || !session) return;
   try {
@@ -301,6 +330,7 @@ async function copyLink(draft: Draft): Promise<void> {
   }
 }
 
+/** Abre o link de assinatura no navegador padrão do sistema. */
 async function openLink(draft: Draft): Promise<void> {
   if (!draft.signUrl) return;
   draft.actionError = null;
@@ -311,6 +341,7 @@ async function openLink(draft: Draft): Promise<void> {
   }
 }
 
+/** Copia todos os links já concluídos, um por linha, como "nome: link". */
 async function copyAllLinks(): Promise<void> {
   const lines = drafts.value
     .filter((d) => d.signUrl)
@@ -332,6 +363,7 @@ async function copyAllLinks(): Promise<void> {
   }
 }
 
+/** Texto de status de uma linha do lote (erro tem prioridade sobre o status bruto). */
 function statusLabel(draft: Draft): string {
   if (draft.errorMessage) return draft.errorMessage;
   switch (draft.status) {
@@ -348,6 +380,7 @@ function statusLabel(draft: Draft): string {
   }
 }
 
+/** Cor do texto de status: vermelho para erro/falha, verde para concluído, cinza no resto. */
 function statusClass(draft: Draft): string {
   if (draft.errorMessage || draft.status === 'failed') return 'text-red-600';
   if (draft.status === 'done') return 'text-emerald-600';

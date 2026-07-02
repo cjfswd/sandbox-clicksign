@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_batch ON items(batch_id);
 "#;
 
+/// Uma única migration (version 1) registrada nos dois bancos (sandbox e producao) — ver Builder abaixo.
 fn batch_migrations() -> Vec<Migration> {
     vec![Migration {
         version: 1,
@@ -40,6 +41,11 @@ fn batch_migrations() -> Vec<Migration> {
     }]
 }
 
+/// Monta o app Tauri: registra os plugins nativos (SQLite, HTTP, FS, clipboard,
+/// dialog, store, opener), garante as pastas sandbox/producao, e sobe a janela.
+/// Chamado por `main.rs` — não há nenhum `#[tauri::command]`/IPC customizado:
+/// toda a lógica de negócio roda no lado TS (native/), falando com os plugins
+/// diretamente via `@tauri-apps/plugin-*`.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

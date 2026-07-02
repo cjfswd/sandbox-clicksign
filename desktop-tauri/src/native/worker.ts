@@ -19,7 +19,9 @@ export interface WorkerDeps {
 
 export class QueueWorker {
   private readonly deps: WorkerDeps;
+  /** false antes de start() ou depois de stop() — wake() vira no-op nesse estado. */
   private running = false;
+  /** Promise do ciclo de drenagem em andamento; null quando a fila está ociosa. */
   private draining: Promise<void> | null = null;
 
   constructor(deps: WorkerDeps) {
@@ -36,6 +38,7 @@ export class QueueWorker {
     this.wake();
   }
 
+  /** Desliga o worker; um drain em andamento termina o item atual mas não reclama mais nenhum. */
   stop(): void {
     this.running = false;
   }
@@ -54,6 +57,7 @@ export class QueueWorker {
     return this.draining;
   }
 
+  /** Loop real: reivindica um item por vez até a fila esvaziar; erro de um item não para os seguintes. */
   private async processUntilEmpty(): Promise<void> {
     for (;;) {
       const item = await this.deps.repo.claimNextPending();

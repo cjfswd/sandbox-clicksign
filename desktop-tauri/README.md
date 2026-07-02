@@ -5,6 +5,9 @@ Clicksign. **Tudo roda dentro do próprio `app.exe`** — o usuário final não
 instala nem inicia nada além do instalador; só configura o token de acesso
 da Clicksign.
 
+Para a explicação de cada função/variável/constante do código, arquivo por
+arquivo, veja [REFERENCE.md](REFERENCE.md).
+
 ## Arquitetura: nativa (sem processo separado)
 
 Persistência (SQLite) e rede (chamadas à API da Clicksign) rodam

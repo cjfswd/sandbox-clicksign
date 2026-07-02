@@ -21,12 +21,14 @@ import type {
 } from './batch.ts';
 import { resetForRetry } from './batch.ts';
 
+/** O que é preciso para criar um item — sem id/status/retryCount, que o repositório preenche. */
 export interface BatchItemInput {
   filename: string;
   signer: { name: string; email?: string; phoneNumber?: string };
   delivery: Delivery;
 }
 
+/** Forma exata de uma linha da tabela `items` (nomes de coluna, snake_case). */
 interface ItemRow {
   id: string;
   batch_id: string;
@@ -44,6 +46,7 @@ interface ItemRow {
 }
 
 export class BatchRepository {
+  /** `db` é a conexão sqlx aberta por load(); uma instância de BatchRepository = uma conexão = um ambiente. */
   private constructor(private readonly db: Database) {}
 
   /** `sqlitePath` deve bater com um dos caminhos registrados em add_migrations no lib.rs. */
@@ -52,10 +55,12 @@ export class BatchRepository {
     return new BatchRepository(db);
   }
 
+  /** Fecha a conexão SQLite (chamado ao trocar de ambiente ou encerrar a sessão). */
   async close(): Promise<void> {
     await this.db.close();
   }
 
+  /** Insere o lote e todos os itens numa transação — ou tudo entra, ou nada entra. */
   async createBatch(items: BatchItemInput[]): Promise<Batch> {
     const batchId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
@@ -91,6 +96,7 @@ export class BatchRepository {
     return batch;
   }
 
+  /** Lê o lote e seus itens (em ordem de criação); null se o id não existir. */
   async getBatch(batchId: string): Promise<Batch | null> {
     const batchRows = await this.db.select<Array<{ id: string; created_at: string }>>(
       'SELECT id, created_at FROM batches WHERE id = $1',
@@ -124,6 +130,7 @@ export class BatchRepository {
     return item;
   }
 
+  /** Grava o resultado final do item (done com dados da Clicksign, ou failed com a mensagem de erro). */
   async saveItemResult(item: DoneItem | FailedItem): Promise<void> {
     if (item.status === 'done') {
       await this.db.execute(
@@ -145,6 +152,7 @@ export class BatchRepository {
     return result.rowsAffected;
   }
 
+  /** Busca o item, valida a transição (via resetForRetry) e grava o novo estado 'pending'. */
   async resetItemForRetry(batchId: string, itemId: string): Promise<PendingItem> {
     const rows = await this.db.select<ItemRow[]>('SELECT * FROM items WHERE id = $1 AND batch_id = $2', [
       itemId,
@@ -162,6 +170,7 @@ export class BatchRepository {
   }
 }
 
+/** Converte uma linha crua do SQLite (snake_case, tipos opcionais) para o BatchItem tipado do domínio. */
 function rowToItem(row: ItemRow): BatchItem {
   const base = {
     id: row.id,

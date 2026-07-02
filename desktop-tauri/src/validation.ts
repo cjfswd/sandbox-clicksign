@@ -18,13 +18,17 @@ export interface ItemValidationError {
   message: string;
 }
 
+/** Checagem de formato simples (não RFC completo) — suficiente para pegar erro de digitação. */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Limite de tamanho de documento da própria Clicksign. */
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
+/** Valida todos os itens do lote; devolve a lista de erros (vazia = tudo certo) com o índice de cada item. */
 export function validateBatchItems(items: BatchItemPayload[]): ItemValidationError[] {
   return items.flatMap((item, index) => validateItem(item, index));
 }
 
+/** Regras de um item: nome com sobrenome e sem números, contato exigido pelo delivery, e PDF válido. */
 function validateItem(item: BatchItemPayload, index: number): ItemValidationError[] {
   const errors: ItemValidationError[] = [];
   const name = item.signer.name.trim();
@@ -63,6 +67,7 @@ function isValidEmail(email: string | undefined): boolean {
   return email !== undefined && EMAIL_PATTERN.test(email);
 }
 
+/** Decodifica o base64, confere a assinatura %PDF no início e o limite de tamanho da Clicksign. */
 function validatePdf(contentBase64: string, index: number): ItemValidationError[] {
   const field = 'contentBase64';
   let bytes: Uint8Array;
