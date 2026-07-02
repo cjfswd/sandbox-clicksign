@@ -52,6 +52,7 @@ function buildMockClient(overrides: Partial<Record<string, unknown>> = {}) {
       calls.push('notifySigner');
       return { id: 'not-1', type: 'notifications', attributes: {} };
     }),
+    getLastRateLimitInfo: vi.fn(() => null),
     ...overrides,
   };
   return { client: client as unknown as ClicksignClient, calls, mocks: client };

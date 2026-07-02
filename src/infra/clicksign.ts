@@ -45,23 +45,57 @@ export interface EventAttributes {
   created: string;
 }
 
+/**
+ * Estado do rate limit reportado pela Clicksign nos headers de resposta
+ * (docs: https://developers.clicksign.com/docs/limite-de-requisicoes).
+ * `resetAtMs` é o X-Rate-Limit-Reset convertido de Unix seconds para ms.
+ */
+export interface RateLimitInfo {
+  limit: number | null;
+  remaining: number | null;
+  resetAtMs: number | null;
+}
+
+function parseRateLimitHeaders(headers: Headers): RateLimitInfo {
+  const toInt = (value: string | null): number | null => {
+    if (value === null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const resetSeconds = toInt(headers.get('x-rate-limit-reset'));
+  return {
+    limit: toInt(headers.get('x-rate-limit')),
+    remaining: toInt(headers.get('x-rate-limit-remaining')),
+    resetAtMs: resetSeconds === null ? null : resetSeconds * 1000,
+  };
+}
+
 export class ClicksignError extends Error {
   readonly status: number;
   readonly body: string;
+  /** Presente quando status === 429; timestamp (ms) em que o limite reseta na Clicksign. */
+  readonly rateLimitResetAtMs: number | null;
 
-  constructor(status: number, body: string, message: string) {
+  constructor(status: number, body: string, message: string, rateLimitResetAtMs: number | null = null) {
     super(message);
     this.name = 'ClicksignError';
     this.status = status;
     this.body = body;
+    this.rateLimitResetAtMs = rateLimitResetAtMs;
   }
 }
 
 export class ClicksignClient {
   private readonly config: ClicksignConfig;
+  private lastRateLimitInfo: RateLimitInfo | null = null;
 
   constructor(config: ClicksignConfig) {
     this.config = config;
+  }
+
+  /** Últimos X-Rate-Limit-* vistos em qualquer resposta (sucesso ou erro). */
+  getLastRateLimitInfo(): RateLimitInfo | null {
+    return this.lastRateLimitInfo;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -75,12 +109,15 @@ export class ClicksignClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
 
+    this.lastRateLimitInfo = parseRateLimitHeaders(response.headers);
+
     const text = await response.text();
     if (!response.ok) {
       throw new ClicksignError(
         response.status,
         text,
         `Clicksign ${method} ${path} falhou com HTTP ${response.status}: ${text.slice(0, 500)}`,
+        response.status === 429 ? this.lastRateLimitInfo.resetAtMs : null,
       );
     }
     return JSON.parse(text) as T;
