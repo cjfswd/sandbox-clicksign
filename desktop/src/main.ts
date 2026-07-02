@@ -1,10 +1,14 @@
 /**
- * HealthMais Assinaturas — app desktop nativo (Perry + perry/ui).
- * Monta lotes de PDFs, envia para a batch API e entrega os links de assinatura.
+ * HealthMais Assinaturas — app desktop nativo Windows (Perry + perry/ui).
  *
- * Reatividade: linhas do lote são redesenhadas só quando itens entram/saem
- * (ForEach sobre rowCount); atualizações de status durante o envio usam os
- * handles imperativos (textSetString/widgetSetHidden) para não perder foco.
+ * Restrições do perry/ui 0.5.1182 no Win32 (validadas por sondas):
+ * - onChange de TextField NÃO dispara → os valores são LIDOS via
+ *   textfieldGetString/pickerGetSelected no momento do envio (e "colhidos"
+ *   antes de qualquer re-render, para não perder o que foi digitado);
+ * - IO assíncrono não é bombeado pelo run loop → HTTP síncrono via curl
+ *   (api-client.ts) e polling com setInterval (timers funcionam);
+ * - máscara em tempo real é inviável sem onChange → telefone e e-mail são
+ *   normalizados/validados na leitura.
  */
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -21,62 +25,141 @@ import {
   TextField,
   VStack,
   alert,
+  buttonSetTextColor,
   clipboardWrite,
   openFileDialog,
   pickerAddItem,
+  pickerGetSelected,
+  pickerSetSelected,
+  setCornerRadius,
+  textfieldGetString,
+  textfieldSetString,
   textSetColor,
   textSetFontSize,
   textSetFontWeight,
   textSetString,
-  textfieldSetString,
+  widgetSetBackgroundColor,
+  widgetSetBorderColor,
+  widgetSetBorderWidth,
+  widgetSetEdgeInsets,
   widgetSetHidden,
+  widgetSetWidth,
 } from 'perry/ui';
 import { preferencesGet, preferencesSet } from 'perry/system';
 import { validateBatchItems } from '../../src/domain/validation.ts';
 import {
-  createBatch,
-  getBatch,
-  testConnection,
+  createBatchSync,
+  getBatchSync,
+  retryItemSync,
+  testConnectionSync,
   type ApiConfig,
+  type BatchItemPayload,
   type Delivery,
 } from './api-client.ts';
 
 // ---------------------------------------------------------------------------
-// Configuração (Registry do Windows via preferences)
+// Paleta
 
-function loadConfig(): ApiConfig {
-  return {
-    baseUrl: String(preferencesGet('api_base_url') ?? 'http://localhost:3000'),
-    apiKey: String(preferencesGet('api_key') ?? ''),
-  };
+const INK = { r: 0.13, g: 0.15, b: 0.19 };
+const MUTED = { r: 0.45, g: 0.48, b: 0.53 };
+const GREEN = { r: 0.09, g: 0.53, b: 0.33 };
+const RED = { r: 0.78, g: 0.18, b: 0.18 };
+const BLUE = { r: 0.12, g: 0.38, b: 0.75 };
+
+function card(widget: number): number {
+  widgetSetBackgroundColor(widget, 1, 1, 1, 1);
+  widgetSetBorderColor(widget, 0.86, 0.88, 0.9, 1);
+  widgetSetBorderWidth(widget, 1);
+  setCornerRadius(widget, 10);
+  widgetSetEdgeInsets(widget, 12, 14, 12, 14);
+  return widget;
 }
 
-const config = loadConfig();
-const connectionStatus = State('');
+function primaryButton(button: number): number {
+  widgetSetBackgroundColor(button, GREEN.r, GREEN.g, GREEN.b, 1);
+  buttonSetTextColor(button, 1, 1, 1, 1);
+  setCornerRadius(button, 6);
+  return button;
+}
+
+function subtleButton(button: number): number {
+  widgetSetBackgroundColor(button, 0.93, 0.94, 0.96, 1);
+  buttonSetTextColor(button, INK.r, INK.g, INK.b, 1);
+  setCornerRadius(button, 6);
+  return button;
+}
 
 // ---------------------------------------------------------------------------
-// Rascunho do lote (array simples — sem State — para não redesenhar a cada tecla)
+// Configuração (Registry via preferences)
+
+const config: ApiConfig = {
+  baseUrl: String(preferencesGet('api_base_url') ?? 'http://localhost:3000'),
+  apiKey: String(preferencesGet('api_key') ?? ''),
+};
+
+// ---------------------------------------------------------------------------
+// Estado do lote
 
 interface DraftRow {
   path: string;
   filename: string;
+  // valores colhidos (fonte de verdade entre re-renders)
   name: string;
   email: string;
   phone: string;
-  delivery: Delivery;
+  deliveryIndex: number;
+  // handles vivos da linha renderizada (para colher/atualizar)
+  nameField: number | null;
+  emailField: number | null;
+  phoneField: number | null;
+  deliveryPicker: number | null;
+  statusText: number | null;
+  linkButton: number | null;
+  retryButton: number | null;
+  // resultado
   itemId: string | null;
   signUrl: string | null;
-  statusText: number | null; // handle do Text de status da linha
-  linkButton: number | null; // handle do botão "Copiar link"
 }
+
+const DELIVERY_OPTIONS: Delivery[] = ['link', 'email', 'whatsapp'];
+const DELIVERY_LABELS = ['Somente link', 'E-mail (Clicksign envia)', 'WhatsApp (Clicksign envia)'];
 
 const drafts: DraftRow[] = [];
 const rowCount = State(0);
-const batchStatus = State('');
-let sending = false;
+const batchStatus = State('Adicione PDFs para montar o lote.');
+let statusBarHandle: number | null = null;
+let activeBatchId: string | null = null;
+let pollHandle: ReturnType<typeof setInterval> | null = null;
+let polling = false;
 
-const DELIVERY_OPTIONS: Delivery[] = ['link', 'email', 'whatsapp'];
-const DELIVERY_LABELS = ['Somente link (envio manual)', 'E-mail (Clicksign notifica)', 'WhatsApp (Clicksign notifica)'];
+function setStatusBar(message: string, tone: 'ok' | 'erro' | 'neutro'): void {
+  batchStatus.set(message);
+  if (statusBarHandle !== null) {
+    textSetString(statusBarHandle, message);
+    const c = tone === 'ok' ? GREEN : tone === 'erro' ? RED : MUTED;
+    textSetColor(statusBarHandle, c.r, c.g, c.b, 1);
+  }
+}
+
+/** Lê os valores atuais dos widgets para os drafts (antes de re-render ou envio). */
+function harvest(): void {
+  for (const draft of drafts) {
+    if (draft.nameField !== null) draft.name = textfieldGetString(draft.nameField);
+    if (draft.emailField !== null) draft.email = textfieldGetString(draft.emailField);
+    if (draft.phoneField !== null) draft.phone = textfieldGetString(draft.phoneField);
+    if (draft.deliveryPicker !== null) draft.deliveryIndex = pickerGetSelected(draft.deliveryPicker);
+  }
+}
+
+function normalizePhone(raw: string): string {
+  return raw.replace(/\D/g, '');
+}
+
+function formatPhone(digits: string): string {
+  if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  return digits;
+}
 
 // ---------------------------------------------------------------------------
 // Ações
@@ -88,56 +171,71 @@ function addPdf(): void {
       alert('Arquivo inválido', 'Selecione um arquivo PDF.');
       return;
     }
+    harvest();
     drafts.push({
       path,
       filename: basename(path),
       name: '',
       email: '',
       phone: '',
-      delivery: 'link',
-      itemId: null,
-      signUrl: null,
+      deliveryIndex: 0,
+      nameField: null,
+      emailField: null,
+      phoneField: null,
+      deliveryPicker: null,
       statusText: null,
       linkButton: null,
+      retryButton: null,
+      itemId: null,
+      signUrl: null,
     });
     rowCount.set(drafts.length);
+    setStatusBar(`${drafts.length} documento(s) no lote.`, 'neutro');
   });
 }
 
 function removeRow(index: number): void {
+  harvest();
   drafts.splice(index, 1);
   rowCount.set(drafts.length);
+  setStatusBar(`${drafts.length} documento(s) no lote.`, 'neutro');
 }
 
-function buildPayload() {
-  return drafts.map((d) => ({
-    filename: d.filename,
-    contentBase64: readFileSync(d.path).toString('base64'),
-    signer: {
-      name: d.name.trim(),
-      email: d.email.trim() === '' ? undefined : d.email.trim(),
-      phoneNumber: d.phone.trim() === '' ? undefined : d.phone.trim(),
-    },
-    delivery: d.delivery,
-  }));
+function buildPayload(): BatchItemPayload[] {
+  return drafts.map((d) => {
+    const phone = normalizePhone(d.phone);
+    return {
+      filename: d.filename,
+      contentBase64: readFileSync(d.path).toString('base64'),
+      signer: {
+        name: d.name.trim(),
+        email: d.email.trim() === '' ? undefined : d.email.trim(),
+        phoneNumber: phone === '' ? undefined : phone,
+      },
+      delivery: DELIVERY_OPTIONS[d.deliveryIndex] ?? 'link',
+    };
+  });
 }
 
-function setRowStatus(index: number, text: string): void {
-  const handle = drafts[index]?.statusText;
-  if (handle !== null && handle !== undefined) {
-    // textSetString atualiza o Text da linha sem redesenhar a árvore
-    textSetString(handle, text);
+function setRowStatus(draft: DraftRow, message: string, tone: 'ok' | 'erro' | 'neutro'): void {
+  if (draft.statusText === null) return;
+  textSetString(draft.statusText, message);
+  const c = tone === 'ok' ? GREEN : tone === 'erro' ? RED : MUTED;
+  textSetColor(draft.statusText, c.r, c.g, c.b, 1);
+}
+
+function sendBatch(): void {
+  if (polling) {
+    alert('Aguarde', 'Já existe um lote em processamento.');
+    return;
   }
-}
-
-async function sendBatch(): Promise<void> {
-  if (sending) return;
   if (drafts.length === 0) {
     alert('Lote vazio', 'Adicione ao menos um PDF antes de enviar.');
     return;
   }
+  harvest();
 
-  let payload;
+  let payload: BatchItemPayload[];
   try {
     payload = buildPayload();
   } catch (error) {
@@ -148,54 +246,84 @@ async function sendBatch(): Promise<void> {
   const validation = validateBatchItems(payload);
   if (!validation.ok) {
     const lines = validation.errors
-      .map((e) => `Item ${e.index + 1} (${drafts[e.index]?.filename}): ${e.message}`)
+      .map((e) => `• ${drafts[e.index]?.filename ?? `item ${e.index + 1}`}: ${e.message}`)
       .join('\n');
+    validation.errors.forEach((e) => {
+      const draft = drafts[e.index];
+      if (draft) setRowStatus(draft, e.message, 'erro');
+    });
     alert('Corrija antes de enviar', lines);
     return;
   }
 
-  sending = true;
-  batchStatus.set('Enviando lote...');
+  setStatusBar('Enviando lote...', 'neutro');
   try {
-    const { batchId } = await createBatch(config, payload);
-    batchStatus.set(`Lote ${batchId.slice(0, 8)} em processamento...`);
-    await pollUntilSettled(batchId);
+    const { batchId } = createBatchSync(config, payload);
+    activeBatchId = batchId;
+    drafts.forEach((d) => setRowStatus(d, 'Na fila', 'neutro'));
+    setStatusBar(`Lote ${batchId.slice(0, 8)} em processamento...`, 'neutro');
+    startPolling();
   } catch (error) {
-    batchStatus.set(`Erro no envio: ${String(error)}`);
-  } finally {
-    sending = false;
+    setStatusBar(`Erro no envio: ${String(error)}`, 'erro');
   }
 }
 
-async function pollUntilSettled(batchId: string): Promise<void> {
-  for (;;) {
-    const status = await getBatch(config, batchId);
-    status.items.forEach((item, index) => {
-      const draft = drafts[index];
-      if (!draft) return;
-      draft.itemId = item.id;
-      if (item.status === 'done' && item.signUrl) {
-        draft.signUrl = item.signUrl;
-        setRowStatus(index, 'Concluído');
-        if (draft.linkButton !== null) widgetSetHidden(draft.linkButton, 0);
-      } else if (item.status === 'failed') {
-        setRowStatus(index, `Falhou: ${item.errorMessage ?? 'erro'}`);
-      } else {
-        setRowStatus(index, item.status === 'processing' ? 'Processando...' : 'Na fila');
-      }
-    });
+function startPolling(): void {
+  polling = true;
+  pollHandle = setInterval(() => {
+    if (!activeBatchId) return;
+    try {
+      const status = getBatchSync(config, activeBatchId);
+      status.items.forEach((item, index) => {
+        const draft = drafts[index];
+        if (!draft) return;
+        draft.itemId = item.id;
+        if (item.status === 'done' && item.signUrl) {
+          draft.signUrl = item.signUrl;
+          setRowStatus(draft, 'Concluído ✓', 'ok');
+          if (draft.linkButton !== null) widgetSetHidden(draft.linkButton, 0);
+          if (draft.retryButton !== null) widgetSetHidden(draft.retryButton, 1);
+        } else if (item.status === 'failed') {
+          setRowStatus(draft, `Falhou: ${item.errorMessage ?? 'erro'}`, 'erro');
+          if (draft.retryButton !== null) widgetSetHidden(draft.retryButton, 0);
+        } else {
+          setRowStatus(draft, item.status === 'processing' ? 'Processando…' : 'Na fila', 'neutro');
+        }
+      });
 
-    const { pending, processing, done, failed, total } = status.progress;
-    batchStatus.set(`Progresso: ${done + failed}/${total} (${done} ok, ${failed} falhas)`);
-    if (pending + processing === 0) {
-      batchStatus.set(
-        failed === 0
-          ? `Lote concluído: ${done}/${total} links prontos.`
-          : `Lote finalizado com ${failed} falha(s) — ${done} link(s) prontos.`,
-      );
-      return;
+      const { pending, processing, done, failed, total } = status.progress;
+      if (pending + processing === 0) {
+        stopPolling();
+        setStatusBar(
+          failed === 0
+            ? `Lote concluído: ${done}/${total} link(s) prontos. Use "Copiar todos".`
+            : `Lote finalizado: ${done} ok, ${failed} falha(s). Reenvie os itens com erro.`,
+          failed === 0 ? 'ok' : 'erro',
+        );
+      } else {
+        setStatusBar(`Progresso: ${done + failed}/${total} concluídos…`, 'neutro');
+      }
+    } catch (error) {
+      setStatusBar(`Erro ao consultar lote: ${String(error)}`, 'erro');
     }
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }, 2500);
+}
+
+function stopPolling(): void {
+  if (pollHandle !== null) clearInterval(pollHandle);
+  pollHandle = null;
+  polling = false;
+}
+
+function retryDraft(draft: DraftRow): void {
+  if (!activeBatchId || !draft.itemId) return;
+  try {
+    retryItemSync(config, activeBatchId, draft.itemId);
+    setRowStatus(draft, 'Reenfileirado…', 'neutro');
+    if (draft.retryButton !== null) widgetSetHidden(draft.retryButton, 1);
+    if (!polling) startPolling();
+  } catch (error) {
+    setRowStatus(draft, `Retry falhou: ${String(error)}`, 'erro');
   }
 }
 
@@ -208,122 +336,154 @@ function copyAllLinks(): void {
     return;
   }
   clipboardWrite(lines.join('\n'));
-  batchStatus.set(`${lines.length} link(s) copiados para a área de transferência.`);
-}
-
-async function saveAndTestConnection(): Promise<void> {
-  preferencesSet('api_base_url', config.baseUrl);
-  preferencesSet('api_key', config.apiKey);
-  connectionStatus.set('Testando...');
-  try {
-    const result = await testConnection(config);
-    connectionStatus.set(result === 'ok' ? 'Conectado ✓' : 'API key inválida ✗');
-  } catch {
-    connectionStatus.set('API inacessível — confira o endereço ✗');
-  }
+  setStatusBar(`${lines.length} link(s) copiados para a área de transferência.`, 'ok');
 }
 
 // ---------------------------------------------------------------------------
-// UI
+// UI — configuração
+
+let urlField: number;
+let keyField: number;
+let connStatusHandle: number;
+
+function saveAndTest(): void {
+  config.baseUrl = textfieldGetString(urlField).trim().replace(/\/+$/, '');
+  config.apiKey = textfieldGetString(keyField).trim();
+  preferencesSet('api_base_url', config.baseUrl);
+  preferencesSet('api_key', config.apiKey);
+
+  textSetString(connStatusHandle, 'Testando…');
+  textSetColor(connStatusHandle, MUTED.r, MUTED.g, MUTED.b, 1);
+
+  const result = testConnectionSync(config);
+  if (result === 'ok') {
+    textSetString(connStatusHandle, 'Conectado ✓');
+    textSetColor(connStatusHandle, GREEN.r, GREEN.g, GREEN.b, 1);
+  } else if (result === 'chave-invalida') {
+    textSetString(connStatusHandle, 'API key inválida ✗');
+    textSetColor(connStatusHandle, RED.r, RED.g, RED.b, 1);
+  } else {
+    textSetString(connStatusHandle, 'API inacessível — confira o endereço ✗');
+    textSetColor(connStatusHandle, RED.r, RED.g, RED.b, 1);
+  }
+}
 
 function settingsSection(): number {
   const title = Text('Configuração da API');
-  textSetFontSize(title, 15);
+  textSetFontSize(title, 14);
   textSetFontWeight(title, 700);
+  textSetColor(title, INK.r, INK.g, INK.b, 1);
 
-  const urlField = TextField('URL da API (ex.: http://localhost:3000)', (v: string) => {
-    config.baseUrl = v.trim();
-  });
+  urlField = TextField('URL da API (ex.: http://localhost:3000)', () => {});
   textfieldSetString(urlField, config.baseUrl);
+  widgetSetWidth(urlField, 320);
 
-  const keyField = TextField('API key', (v: string) => {
-    config.apiKey = v.trim();
-  });
+  keyField = TextField('API key', () => {});
   textfieldSetString(keyField, config.apiKey);
+  widgetSetWidth(keyField, 260);
 
-  const statusLabel = Text(`${connectionStatus.value}`);
-  textSetColor(statusLabel, 0.3, 0.3, 0.3, 1);
+  const testButton = subtleButton(Button('Salvar e testar', saveAndTest));
 
-  return VStack(8, [
-    title,
-    HStack(8, [urlField, keyField, Button('Salvar e testar', () => void saveAndTestConnection())]),
-    statusLabel,
-  ]);
+  connStatusHandle = Text(config.apiKey === '' ? 'Informe a API key e teste a conexão.' : '');
+  textSetColor(connStatusHandle, MUTED.r, MUTED.g, MUTED.b, 1);
+  textSetFontSize(connStatusHandle, 12);
+
+  return card(VStack(8, [title, HStack(8, [urlField, keyField, testButton, Spacer()]), connStatusHandle]));
 }
+
+// ---------------------------------------------------------------------------
+// UI — linha do lote
 
 function rowWidget(index: number): number {
   const draft = drafts[index];
   if (!draft) return Spacer();
 
-  const fileLabel = Text(draft.filename);
+  const fileLabel = Text(`📄 ${draft.filename}`);
   textSetFontWeight(fileLabel, 600);
+  textSetColor(fileLabel, INK.r, INK.g, INK.b, 1);
 
-  const nameField = TextField('Nome e sobrenome', (v: string) => {
-    draft.name = v;
-  });
-  textfieldSetString(nameField, draft.name);
+  draft.statusText = Text('');
+  textSetFontSize(draft.statusText, 12);
 
-  const emailField = TextField('E-mail', (v: string) => {
-    draft.email = v;
-  });
-  textfieldSetString(emailField, draft.email);
+  draft.linkButton = subtleButton(
+    Button('Copiar link', () => {
+      if (draft.signUrl) {
+        clipboardWrite(draft.signUrl);
+        setRowStatus(draft, 'Link copiado ✓', 'ok');
+      }
+    }),
+  );
+  widgetSetHidden(draft.linkButton, draft.signUrl ? 0 : 1);
 
-  const phoneField = TextField('Telefone (WhatsApp)', (v: string) => {
-    draft.phone = v;
-  });
-  textfieldSetString(phoneField, draft.phone);
+  draft.retryButton = subtleButton(Button('Tentar de novo', () => retryDraft(draft)));
+  widgetSetHidden(draft.retryButton, 1);
 
-  const deliveryPicker = Picker((selected: number) => {
-    draft.delivery = DELIVERY_OPTIONS[selected] ?? 'link';
-  });
-  DELIVERY_LABELS.forEach((label) => pickerAddItem(deliveryPicker, label));
+  const removeButton = Button('✕', () => removeRow(index));
+  buttonSetTextColor(removeButton, RED.r, RED.g, RED.b, 1);
 
-  const statusLabel = Text('');
-  textSetColor(statusLabel, 0.25, 0.45, 0.25, 1);
-  draft.statusText = statusLabel;
+  draft.nameField = TextField('Nome e sobrenome *', () => {});
+  textfieldSetString(draft.nameField, draft.name);
+  widgetSetWidth(draft.nameField, 220);
 
-  const linkButton = Button('Copiar link', () => {
-    if (draft.signUrl) {
-      clipboardWrite(draft.signUrl);
-      setRowStatus(index, 'Link copiado ✓');
-    }
-  });
-  widgetSetHidden(linkButton, 1);
-  draft.linkButton = linkButton;
+  draft.emailField = TextField('E-mail', () => {});
+  textfieldSetString(draft.emailField, draft.email);
+  widgetSetWidth(draft.emailField, 220);
 
-  const removeButton = Button('Remover', () => removeRow(index));
+  draft.phoneField = TextField('Telefone: (11) 99999-8888', () => {});
+  textfieldSetString(draft.phoneField, formatPhone(normalizePhone(draft.phone)));
+  widgetSetWidth(draft.phoneField, 170);
 
-  return VStack(6, [
-    HStack(8, [fileLabel, Spacer(), statusLabel, linkButton, removeButton]),
-    HStack(8, [nameField, emailField, phoneField, deliveryPicker]),
-    Divider(),
-  ]);
+  draft.deliveryPicker = Picker(() => {});
+  DELIVERY_LABELS.forEach((label) => pickerAddItem(draft.deliveryPicker!, label));
+  pickerSetSelected(draft.deliveryPicker, draft.deliveryIndex);
+
+  return card(
+    VStack(8, [
+      HStack(8, [fileLabel, Spacer(), draft.statusText, draft.linkButton, draft.retryButton, removeButton]),
+      HStack(8, [draft.nameField, draft.emailField, draft.phoneField, draft.deliveryPicker, Spacer()]),
+    ]),
+  );
 }
 
-const header = Text('HealthMais Assinaturas — Envio em Lote');
+// ---------------------------------------------------------------------------
+// Montagem
+
+const header = Text('HealthMais Assinaturas');
 textSetFontSize(header, 20);
 textSetFontWeight(header, 800);
+textSetColor(header, BLUE.r, BLUE.g, BLUE.b, 1);
 
-const statusBar = Text(`${batchStatus.value}`);
-textSetFontSize(statusBar, 13);
+const subtitle = Text('Envio em lote de documentos para assinatura via Clicksign');
+textSetFontSize(subtitle, 12);
+textSetColor(subtitle, MUTED.r, MUTED.g, MUTED.b, 1);
+
+const addButton = subtleButton(Button('+ Adicionar PDF', addPdf));
+const sendButton = primaryButton(Button('Enviar lote', sendBatch));
+const copyButton = subtleButton(Button('Copiar todos os links', copyAllLinks));
+
+statusBarHandle = Text(`${batchStatus.value}`);
+textSetFontSize(statusBarHandle, 12);
+textSetColor(statusBarHandle, MUTED.r, MUTED.g, MUTED.b, 1);
+
+const emptyHint = Text(`Documentos no lote: ${rowCount.value}`);
+textSetFontSize(emptyHint, 12);
+textSetColor(emptyHint, MUTED.r, MUTED.g, MUTED.b, 1);
+
+const root = VStack(12, [
+  VStack(2, [header, subtitle]),
+  settingsSection(),
+  HStack(10, [addButton, sendButton, copyButton, Spacer(), emptyHint]),
+  VStack(10, [ForEach(rowCount, (i: number) => rowWidget(i))]),
+  Spacer(),
+  Divider(),
+  statusBarHandle,
+]);
+widgetSetBackgroundColor(root, 0.96, 0.965, 0.975, 1);
+widgetSetEdgeInsets(root, 16, 18, 12, 18);
 
 App({
   title: 'HealthMais Assinaturas',
-  width: 1080,
-  height: 760,
-  body: VStack(14, [
-    header,
-    settingsSection(),
-    Divider(),
-    HStack(10, [
-      Button('Adicionar PDF', addPdf),
-      Button('Enviar lote', () => void sendBatch()),
-      Button('Copiar todos os links', copyAllLinks),
-      Spacer(),
-    ]),
-    Text(`Documentos no lote: ${rowCount.value}`),
-    VStack(8, [ForEach(rowCount, (i: number) => rowWidget(i))]),
-    Spacer(),
-    statusBar,
-  ]),
+  width: 1100,
+  height: 780,
+  body: root,
 });

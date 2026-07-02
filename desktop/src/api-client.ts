@@ -1,8 +1,15 @@
 /**
- * Cliente da batch API para o app desktop (TS puro — sem dependências).
- * Os tipos espelham contracts/batch-contract.ts; mantidos planos aqui para
- * o binário Perry não arrastar zod/@ts-rest para dentro do executável.
+ * Cliente da batch API para o app desktop — transporte SÍNCRONO via curl.exe
+ * (presente em todo Windows 10/11).
+ *
+ * Por que não fetch/node:http: no perry/ui 0.5.1182 para Win32, o run loop
+ * nativo não bombeia conclusões de IO assíncrono — promessas de rede nunca
+ * resolvem dentro de apps de UI (funciona em binários sem perry/ui; o fix do
+ * pump existe no fonte upstream, ainda sem release). Chamadas síncronas
+ * bloqueiam a UI por dezenas de ms contra a API local — aceitável e confiável.
+ * Reavaliar no próximo release do Perry.
  */
+import { execFileSync } from 'node:child_process';
 
 export type Delivery = 'email' | 'whatsapp' | 'link';
 export type ItemStatus = 'pending' | 'processing' | 'done' | 'failed';
@@ -38,55 +45,68 @@ export class ApiError extends Error {
   readonly details: string;
 
   constructor(status: number, details: string) {
-    super(`API respondeu ${status}: ${details}`);
+    super(`API respondeu ${status}: ${details.slice(0, 300)}`);
     this.name = 'ApiError';
     this.status = status;
     this.details = details;
   }
 }
 
-async function request<T>(config: ApiConfig, method: string, path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${config.baseUrl}${path}`, {
+function requestSync<T>(config: ApiConfig, method: string, path: string, body?: unknown): T {
+  const args = [
+    '-s',
+    '-w',
+    '\n__HTTP_STATUS__:%{http_code}',
+    '-X',
     method,
-    headers: {
-      'x-api-key': config.apiKey,
-      'content-type': 'application/json',
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    `${config.baseUrl}${path}`,
+    '-H',
+    `x-api-key: ${config.apiKey}`,
+    '-H',
+    'content-type: application/json',
+    '--connect-timeout',
+    '5',
+    '--max-time',
+    '120',
+  ];
+  if (body !== undefined) args.push('--data-binary', '@-');
+
+  const raw = execFileSync('curl.exe', args, {
+    encoding: 'utf8',
+    input: body === undefined ? undefined : JSON.stringify(body),
+    maxBuffer: 256 * 1024 * 1024,
   });
-  const text = await response.text();
-  if (!response.ok) throw new ApiError(response.status, text.slice(0, 500));
+
+  const marker = raw.lastIndexOf('\n__HTTP_STATUS__:');
+  if (marker < 0) throw new Error('Resposta do curl sem marcador de status');
+  const status = Number(raw.slice(marker + 17).trim());
+  const text = raw.slice(0, marker);
+  if (status < 200 || status >= 300) throw new ApiError(status, text);
   return JSON.parse(text) as T;
 }
 
-export async function createBatch(
-  config: ApiConfig,
-  items: BatchItemPayload[],
-): Promise<{ batchId: string }> {
-  return request(config, 'POST', '/batches', { items });
+export function createBatchSync(config: ApiConfig, items: BatchItemPayload[]): { batchId: string } {
+  return requestSync(config, 'POST', '/batches', { items });
 }
 
-export async function getBatch(config: ApiConfig, batchId: string): Promise<BatchStatus> {
-  return request(config, 'GET', `/batches/${batchId}`);
+export function getBatchSync(config: ApiConfig, batchId: string): BatchStatus {
+  return requestSync(config, 'GET', `/batches/${batchId}`);
 }
 
-export async function retryItem(config: ApiConfig, batchId: string, itemId: string): Promise<void> {
-  await request(config, 'POST', `/batches/${batchId}/items/${itemId}/retry`, {});
+export function retryItemSync(config: ApiConfig, batchId: string, itemId: string): void {
+  requestSync(config, 'POST', `/batches/${batchId}/items/${itemId}/retry`, {});
 }
 
-/**
- * Testa conectividade e API key: 404 em lote inexistente = autenticado;
- * 401 = chave errada; erro de rede = endereço inacessível.
- */
-export async function testConnection(config: ApiConfig): Promise<'ok' | 'chave-invalida'> {
+/** 404 em lote inexistente = autenticado; 401 = chave errada; outros = rede. */
+export function testConnectionSync(config: ApiConfig): 'ok' | 'chave-invalida' | 'inacessivel' {
   try {
-    await getBatch(config, '00000000-0000-0000-0000-000000000000');
+    getBatchSync(config, '00000000-0000-0000-0000-000000000000');
     return 'ok';
   } catch (error) {
     if (error instanceof ApiError) {
       if (error.status === 404) return 'ok';
       if (error.status === 401) return 'chave-invalida';
     }
-    throw error;
+    return 'inacessivel';
   }
 }
