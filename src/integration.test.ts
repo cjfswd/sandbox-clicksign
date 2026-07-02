@@ -69,8 +69,8 @@ describe.skipIf(!token)('integração sandbox: lote completo', () => {
   it('cria lote de 3 itens delivery=link, processa e todos os links resolvem', async () => {
     const pdf = await generateSamplePdfBase64('Teste de Integracao');
     const payload = {
-      items: [1, 2, 3].map((n) => ({
-        filename: `integracao-${n}.pdf`,
+      items: ['Um', 'Dois', 'Tres'].map((n, i) => ({
+        filename: `integracao-${i + 1}.pdf`,
         contentBase64: pdf,
         signer: { name: `Signatario Integracao ${n}`, email: 'ti@healthmaiscuidados.com' },
         delivery: 'link' as const,

@@ -27,6 +27,15 @@ describe('validateBatchItems', () => {
     }
   });
 
+  it('rejeita nome com números (regra da Clicksign)', () => {
+    const result = validateBatchItems([validItem({ signer: { name: 'Fulano da Silva 2' } })]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors[0]).toMatchObject({ index: 0, field: 'signer.name' });
+      expect(result.errors[0]!.message).toMatch(/números/);
+    }
+  });
+
   it('rejeita delivery=email sem email', () => {
     const result = validateBatchItems([
       validItem({ delivery: 'email', signer: { name: 'Fulano da Silva' } }),

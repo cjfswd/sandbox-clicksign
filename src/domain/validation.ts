@@ -45,6 +45,15 @@ function validateItem(item: BatchItemInput, index: number): ItemValidationError[
     });
   }
 
+  // A Clicksign rejeita nomes com números ("name não está em um formato válido").
+  if (/\d/.test(item.signer.name)) {
+    errors.push({
+      index,
+      field: 'signer.name',
+      message: 'O nome do signatário não pode conter números',
+    });
+  }
+
   if (item.delivery === 'email' && !isValidEmail(item.signer.email)) {
     errors.push({
       index,

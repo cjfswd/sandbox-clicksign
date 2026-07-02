@@ -37,7 +37,7 @@ task-009 ←─────┤      task-008 (worker) ←── task-005
 
 ## task-001 — Bootstrap do projeto
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** — · **Nível:** 1
+**Status:** done · **Depende de:** — · **Nível:** 1
 
 **O que fazer:** Transformar o projeto em base implementável: `git init` + commit inicial
 do estado atual; instalar dependências (`hono`, `@hono/node-server`, `@ts-rest/core`,
@@ -58,7 +58,7 @@ os imports dos scripts CLI existentes; configurar script `npm test` (vitest).
 
 ## task-002 — Domínio: estados e transições do lote
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-001 · **Nível:** 2
+**Status:** done · **Depende de:** task-001 · **Nível:** 2
 
 **O que fazer (TDD):** Criar `src/domain/batch.ts` com os tipos `Batch`, `BatchItem`
 (discriminated union por `status: pending | processing | done | failed`), `Delivery`
@@ -77,7 +77,7 @@ inválidas (ex.: `done → processing`) lançam erro. Sem IO.
 
 ## task-003 — Contrato ts-rest e validação de lote
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-002 · **Nível:** 3 · **Paralela com:** 005, 006
+**Status:** done · **Depende de:** task-002 · **Nível:** 3 · **Paralela com:** 005, 006
 
 **O que fazer (TDD):** Criar `contracts/batch-contract.ts` (ts-rest + Zod):
 `POST /batches`, `GET /batches/:id`, `POST /batches/:id/items/:itemId/retry`, com
@@ -98,7 +98,7 @@ não só o primeiro.
 
 ## task-004 — Rate limiter (token bucket)
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-001 · **Nível:** 2 · **Paralela com:** 002
+**Status:** done · **Depende de:** task-001 · **Nível:** 2 · **Paralela com:** 002
 
 **O que fazer (TDD):** Criar `src/infra/rate-limiter.ts`: token bucket com capacidade e
 janela configuráveis (`acquire(): Promise<void>` que resolve quando há token). Testes
@@ -115,7 +115,7 @@ janela, reposição gradual.
 
 ## task-005 — Repositório SQLite e armazenamento de PDFs
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-002 · **Nível:** 3 · **Paralela com:** 003, 006
+**Status:** done · **Depende de:** task-002 · **Nível:** 3 · **Paralela com:** 003, 006
 
 **O que fazer (TDD):** Criar `src/infra/repository.ts` (`BatchRepository` sobre
 `node:sqlite` `DatabaseSync`): schema/migração idempotente, `createBatch`, `getBatch`
@@ -136,7 +136,7 @@ Testes com SQLite `:memory:` e diretório temporário.
 
 ## task-006 — Cliente Clicksign com vazão controlada e backoff
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-004 · **Nível:** 3 · **Paralela com:** 003, 005
+**Status:** done · **Depende de:** task-004 · **Nível:** 3 · **Paralela com:** 003, 005
 
 **O que fazer (TDD):** Criar `src/infra/throttled-clicksign.ts`: wrapper do
 `ClicksignClient` que (a) passa toda requisição pelo token bucket; (b) em HTTP 429,
@@ -158,7 +158,7 @@ Testes com fetch mockado (msw ou vi.stubGlobal).
 
 ## task-007 — Pipeline de processamento de um item
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-006, task-002 · **Nível:** 4 · **Paralela com:** 009
+**Status:** done · **Depende de:** task-006, task-002 · **Nível:** 4 · **Paralela com:** 009
 
 **O que fazer (TDD):** Criar `src/app/process-item.ts`: função que recebe um item e o
 client throttled e executa envelope → documento → signatário (com `communicate_events`
@@ -179,7 +179,7 @@ Testes com client mockado verificando ordem dos passos e os payloads por tipo de
 
 ## task-008 — Worker da fila
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-005, task-007 · **Nível:** 5
+**Status:** done · **Depende de:** task-005, task-007 · **Nível:** 5
 
 **O que fazer (TDD):** Criar `src/app/worker.ts`: loop sequencial que faz claim do
 próximo item `pending`, roda `process-item`, grava resultado (`done` + link) ou captura
@@ -199,7 +199,7 @@ impede os demais; boot com item `processing` órfão reprocessa.
 
 ## task-009 — Servidor HTTP, auth e handlers
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-003, task-005 · **Nível:** 4 · **Paralela com:** 007
+**Status:** done · **Depende de:** task-003, task-005 · **Nível:** 4 · **Paralela com:** 007
 
 **O que fazer (TDD):** Criar `src/http/server.ts` (Hono + middleware `x-api-key`,
 comparação timing-safe; 401 sem detalhes — critério 6) e `src/http/handlers.ts`
@@ -221,7 +221,7 @@ token no corpo do `ClicksignError`). Testes via `app.request()` do Hono (sem por
 
 ## task-010 — Bootstrap, integração sandbox e documentação
 
-**Status:** implemented — verificação pendente (aguardando serviço de permissões) · **Depende de:** task-008, task-009 · **Nível:** 6
+**Status:** done · **Depende de:** task-008, task-009 · **Nível:** 6
 
 **O que fazer:** Criar `src/index.ts` (env → db → worker → servidor; shutdown gracioso).
 Teste de integração `src/integration.test.ts` contra o **sandbox real** (pulado se
