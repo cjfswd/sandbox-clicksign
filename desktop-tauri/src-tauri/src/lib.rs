@@ -31,14 +31,30 @@ CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_batch ON items(batch_id);
 "#;
 
-/// Uma única migration (version 1) registrada nos dois bancos (sandbox e producao) — ver Builder abaixo.
+/// Migration v2: campos para status de assinatura confirmado na Clicksign,
+/// preenchidos só quando o usuário clica em "Atualizar" no histórico — não
+/// existiam na v1 porque a checagem manual de status é uma feature nova.
+const ADD_CLICKSIGN_STATUS_SQL: &str = r#"
+ALTER TABLE items ADD COLUMN clicksign_status TEXT;
+ALTER TABLE items ADD COLUMN clicksign_status_checked_at TEXT;
+"#;
+
+/// Migrations registradas nos dois bancos (sandbox e producao) — ver Builder abaixo.
 fn batch_migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create_batches_and_items",
-        sql: SCHEMA_SQL,
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "create_batches_and_items",
+            sql: SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "add_clicksign_status",
+            sql: ADD_CLICKSIGN_STATUS_SQL,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 /// Monta o app Tauri: registra os plugins nativos (SQLite, HTTP, FS, clipboard,
