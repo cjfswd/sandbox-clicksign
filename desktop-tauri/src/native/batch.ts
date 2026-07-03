@@ -7,6 +7,9 @@
 /** Como o signatário é notificado/autenticado — ver authMethodFor/communicateEventsFor em process-item.ts. */
 export type Delivery = 'email' | 'whatsapp' | 'link' | 'handwritten';
 
+/** Status da assinatura confirmado na Clicksign — independente do status do pipeline de envio (pending/processing/done/failed). null até a primeira checagem manual (botão "Atualizar"). */
+export type ClicksignStatus = 'pending' | 'signed' | 'canceled';
+
 /** Dados de contato de quem vai assinar; pelo menos um de email/phoneNumber é exigido na validação. */
 export interface Signer {
   name: string;
@@ -24,6 +27,10 @@ interface BaseItem {
   delivery: Delivery;
   /** Quantas vezes já foi reenviado via resetForRetry; começa em 0. */
   retryCount: number;
+  /** null até alguém clicar em "Atualizar" no histórico. */
+  clicksignStatus: ClicksignStatus | null;
+  /** Timestamp ISO da última checagem; null se nunca checado. */
+  clicksignStatusCheckedAt: string | null;
 }
 
 export interface PendingItem extends BaseItem {
@@ -94,4 +101,13 @@ export function resetForRetry(item: BatchItem): PendingItem {
   if (item.status !== 'failed') invalidTransition('resetForRetry', "'failed'", item);
   const { errorMessage: _discarded, ...base } = item;
   return { ...base, status: 'pending', retryCount: item.retryCount + 1 };
+}
+
+/** Grava o resultado de uma checagem manual de status na Clicksign — não é uma transição de pipeline, funciona em qualquer status do item. */
+export function applyClicksignStatus(
+  item: BatchItem,
+  status: ClicksignStatus,
+  checkedAtIso: string,
+): BatchItem {
+  return { ...item, clicksignStatus: status, clicksignStatusCheckedAt: checkedAtIso };
 }
