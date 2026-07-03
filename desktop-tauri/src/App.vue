@@ -95,7 +95,11 @@ function currentHistoryFilter(): HistoryFilter {
     search: historySearch.value.trim() || undefined,
     status: historyStatus.value || undefined,
     dateFrom: historyDateFrom.value || undefined,
-    dateTo: historyDateTo.value || undefined,
+    // "até" é um <input type="date"> (ex.: "2026-07-03"), mas created_at no banco
+    // é um timestamp ISO completo (ex.: "2026-07-03T14:22:31.502Z"). Comparando
+    // strings, "2026-07-03" < "2026-07-03T14:22:31.502Z", então o dia inteiro do
+    // filtro final seria excluído. Estendemos até o fim do dia (23:59:59.999Z).
+    dateTo: historyDateTo.value ? `${historyDateTo.value}T23:59:59.999Z` : undefined,
   };
 }
 
