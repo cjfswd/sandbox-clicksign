@@ -19,11 +19,13 @@ app Tauri em uso, per escopo pedido.
 - [Camada nativa — `src/native/`](#camada-nativa--srcnative)
   - [native/batch.ts](#nativebatchts)
   - [native/clicksign.ts](#nativeclicksignts)
+  - [native/clicksign-status.ts](#nativeclicksign-statusts)
   - [native/rate-limiter.ts](#nativerate-limiterts)
   - [native/throttled-clicksign.ts](#nativethrottled-clicksignts)
   - [native/process-item.ts](#nativeprocess-itemts)
   - [native/worker.ts](#nativeworkerts)
   - [native/repository.ts](#nativerepositoryts)
+  - [native/history-query.ts](#nativehistory-queryts)
   - [native/pdf-store.ts](#nativepdf-storets)
   - [native/session.ts](#nativesessionts)
 - [Camada Rust — `src-tauri/src/`](#camada-rust--src-taurisrc)
@@ -79,6 +81,19 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 | `justCopied` | Path do draft cujo link foi copiado por último (feedback "Copiado ✓" por 2s). |
 | `justCopiedAll` | `true` por 2s depois de "Copiar todos os links". |
 
+#### Estado da seção "Histórico"
+
+| Nome | Papel |
+|---|---|
+| `HISTORY_PAGE_SIZE` | `20` — quantos lotes por página em `loadHistory`/`loadMoreHistory`. |
+| `HISTORY_STATUS_LABELS` | `Record<NonNullable<HistoryFilter['status']>, string>` — rótulos do select de status do filtro (`pending`→"Pendente", `signed`→"Assinado", `canceled`→"Cancelado ou deletado", `failed`→"Falhou"). |
+| `historySearch` / `historyStatus` / `historyDateFrom` / `historyDateTo` | Campos do filtro (v-model); `currentHistoryFilter()` monta o `HistoryFilter` a partir deles, convertendo string vazia para `undefined`. |
+| `historyBatches` | `Batch[]` — lotes carregados na tela (acumula a cada "Carregar mais"; reinicia do zero a cada "Buscar"). |
+| `historyOffset` | Offset da próxima página a buscar. |
+| `historyHasMore` | `true` enquanto a última página buscada veio cheia (`=== HISTORY_PAGE_SIZE`) — controla se o botão "Carregar mais" aparece. |
+| `historyLoading` | Desabilita os botões de busca/paginação enquanto uma requisição está em voo. |
+| `historyStatusMessage` | Mensagem de status da seção (erros, "Nenhum lote encontrado", progresso de "Atualizar tudo"). |
+
 #### Funções
 
 | Função | Assinatura | O que faz |
@@ -99,6 +114,15 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 | `copyAllLinks` | `() => Promise<void>` | Monta uma lista `"nome: link"` (um por linha) de todos os drafts já concluídos e copia tudo de uma vez; se nenhum link estiver pronto ainda, avisa no rodapé em vez de copiar vazio. |
 | `statusLabel` | `(draft: Draft) => string` | Texto de status de uma linha: erro tem prioridade sobre o status bruto (`errorMessage` non-null vence qualquer `status`). |
 | `statusClass` | `(draft: Draft) => string` | Cor do texto de status (vermelho erro/falha, verde concluído, cinza resto). |
+| `openSignUrl` | `(url: string) => Promise<void>` | Abre uma URL de assinatura no navegador padrão (`plugin-opener`), sem tratamento de erro — cada chamador decide onde mostrar a falha. |
+| `openHistoryLink` | `(url: string) => Promise<void>` | Abre o link de um item do histórico via `openSignUrl`; erro vira `historyStatusMessage`. |
+| `loadHistory` | `() => Promise<void>` | Recarrega o histórico do zero (`offset = 0`) com `currentHistoryFilter()`; chamada ao clicar "Buscar" e automaticamente após `saveAndConnect` conectar com sucesso (é uma leitura local no SQLite via `listHistory`, não uma chamada à Clicksign — não viola a regra de "sem checagem automática de status"). |
+| `loadMoreHistory` | `() => Promise<void>` | Busca a próxima página de lotes com o filtro atual, sem limpar o que já está na tela ("Carregar mais"). |
+| `refreshHistoryItem` | `(batch, item) => Promise<void>` | Chama `session.refreshItemStatus(batch.id, item.id)` e atualiza o item in-place via `applyHistoryItemStatus`. |
+| `refreshAllLoadedHistory` | `() => Promise<void>` | Roda `refreshHistoryItem` para todo item `done` **carregado na tela agora** (não o histórico inteiro) via `Promise.allSettled`, reportando quantos falharam. |
+| `retryHistoryItem` | `(batch, item) => Promise<void>` | Reaproveita `session.retryItem` para um item `failed` de um lote antigo; o worker processa em segundo plano — a mensagem pede pro usuário clicar "Buscar" de novo depois pra ver o resultado (a seção não faz polling). |
+| `applyHistoryItemStatus` | `(batchId, itemId, status) => void` | Escreve `clicksignStatus`/`clicksignStatusCheckedAt` no item certo dentro de `historyBatches`, achado por busca linear. |
+| `clicksignStatusLabel` | `(item: BatchItem) => string` | Rótulo textual do status Clicksign de um item `done` ("Assinado ✓", "Cancelado/deletado na Clicksign", "Pendente de assinatura", "Status não verificado" se `clicksignStatus` é `null`); string vazia para itens não-`done`. |
 
 #### Template
 
@@ -107,7 +131,10 @@ Estrutura: cabeçalho com título e selo de ambiente → seção de conexão
 barra de ações ("+ Adicionar PDF", "Enviar lote", "Copiar todos os links",
 contador) → lista de cartões (um por `draft`, com nome/e-mail/telefone/select
 de delivery, link clicável quando pronto, botões de ação) → rodapé com
-`batchStatus`.
+`batchStatus` → seção "Histórico" (barra de filtro com busca/status/datas +
+botão "Atualizar tudo", lista de lotes agrupados por data com os documentos
+de cada um, botões "Atualizar status"/"Tentar de novo" por item, botão
+"Carregar mais").
 
 ### `src/validation.ts`
 
@@ -143,7 +170,8 @@ dependência de Tauri/Node — só TypeScript.
 |---|---|---|
 | `Delivery` | `'email' \| 'whatsapp' \| 'link' \| 'handwritten'` | Como o signatário é notificado e autenticado. Ver `authMethodFor`/`communicateEventsFor` em `process-item.ts` para o que cada valor implica na prática. |
 | `Signer` (interface) | tipo | `name`, `email?`, `phoneNumber?` — pelo menos um contato é exigido pela validação. |
-| `BaseItem` (interface, privada) | tipo | Campos comuns a todo item: `id` (UUID gerado pelo repositório), `batchId`, `filename`, `signer`, `delivery`, `retryCount` (começa em 0). |
+| `ClicksignStatus` | `'pending' \| 'signed' \| 'canceled'` | Status de assinatura confirmado na Clicksign — independente do `status` do pipeline de envio. Ver `native/clicksign-status.ts` (`mapEnvelopeStatus`) para como é derivado do envelope real. |
+| `BaseItem` (interface, privada) | tipo | Campos comuns a todo item: `id` (UUID gerado pelo repositório), `batchId`, `filename`, `signer`, `delivery`, `retryCount` (começa em 0), `clicksignStatus: ClicksignStatus \| null` (`null` até a primeira checagem manual no histórico), `clicksignStatusCheckedAt: string \| null` (timestamp ISO da última checagem). |
 | `PendingItem` / `ProcessingItem` / `DoneItem` / `FailedItem` (interfaces) | tipo | `BaseItem` + um `status` literal específico; `DoneItem` acrescenta `envelopeId`/`signerId`/`signUrl`, `FailedItem` acrescenta `errorMessage`. |
 | `BatchItem` | união discriminada | `PendingItem \| ProcessingItem \| DoneItem \| FailedItem` — o TypeScript só deixa acessar `envelopeId`/`errorMessage`/etc. depois de checar `status` no branch certo. |
 | `Batch` (interface) | tipo | `id`, `createdAt`, `items: BatchItem[]` — retorno de `BatchRepository.getBatch`. |
@@ -153,10 +181,12 @@ dependência de Tauri/Node — só TypeScript.
 | `complete` | `(item, result) => DoneItem` | `processing → done`, grava `envelopeId`/`signerId`/`signUrl` do resultado. |
 | `fail` | `(item, errorMessage) => FailedItem` | `processing → failed`. |
 | `resetForRetry` | `(item) => PendingItem` | `failed → pending`: descarta `errorMessage` e incrementa `retryCount`. |
+| `applyClicksignStatus` | `(item, status, checkedAtIso) => BatchItem` | Grava o resultado de uma checagem manual de status na Clicksign — **não** é uma transição de pipeline (não valida/exige um `status` específico), funciona em qualquer item, em qualquer status. |
 
-Todas as funções de transição lançam se o item não estiver no status
-esperado — isso é o que torna ilegal, por exemplo, tentar `complete()` um
-item que já está `done`.
+Todas as funções de transição (`startProcessing`/`complete`/`fail`/`resetForRetry`)
+lançam se o item não estiver no status esperado — isso é o que torna ilegal,
+por exemplo, tentar `complete()` um item que já está `done`. `applyClicksignStatus`
+é a exceção deliberada: não é transição de pipeline, é ortogonal a ele.
 
 ### `native/clicksign.ts`
 
@@ -197,6 +227,15 @@ processo Rust, não no motor do webview, então não sofre CORS).
 | `ClicksignClient.getEnvelopeEvents` | `GET /envelopes/:id/events` — o evento `add_signer` traz a URL real de assinatura de cada signatário; é como `process-item.ts` resolve `signUrl`. |
 | `ClicksignClient.notifySigner` | `POST /envelopes/:id/signers/:id/notifications` — dispara a notificação de solicitação de assinatura pelo canal já configurado no signatário (`communicate_events`). |
 | `ClicksignClient.signUrl` | `(signerId) => string` — monta o link de assinatura pelo formato conhecido (`/notarial/widget/signatures/:id/redirect`), usado como **fallback** caso o evento `add_signer` não traga a URL. |
+
+### `native/clicksign-status.ts`
+
+Mapeamento puro do status do envelope na Clicksign para o `ClicksignStatus`
+que o app guarda e mostra no histórico.
+
+| Nome | O que é/faz |
+|---|---|
+| `mapEnvelopeStatus` | `(envelopeStatus: EnvelopeAttributes['status'] \| null) => ClicksignStatus` — `'closed'` (todos assinaram) → `'signed'`; `'canceled'` → `'canceled'`; `'running'`/`'draft'` → `'pending'`; `null` (o GET do envelope voltou 404 — cancelado/deletado na Clicksign) → `'canceled'`. Usada por `session.ts` (`refreshItemStatus`). |
 
 ### `native/rate-limiter.ts`
 
@@ -276,7 +315,7 @@ processo Rust, sem processo separado).
 | Nome | O que é/faz |
 |---|---|
 | `BatchItemInput` (interface) | O que é preciso para **criar** um item — sem `id`/`status`/`retryCount`, que o repositório preenche. |
-| `ItemRow` (interface, privada) | Forma exata de uma linha da tabela `items` (nomes de coluna em `snake_case`, exatamente como o SQLite devolve). |
+| `ItemRow` (interface, privada) | Forma exata de uma linha da tabela `items` (nomes de coluna em `snake_case`, exatamente como o SQLite devolve) — inclui `clicksign_status`/`clicksign_status_checked_at` (nuláveis, colunas da migration v2). |
 | `BatchRepository` (classe) | Ver construtor e métodos. |
 | `constructor` (privado) | Recebe a conexão `Database` (sqlx) já aberta — uma instância de `BatchRepository` = uma conexão = um ambiente (sandbox ou produção nunca compartilham repositório). |
 | `load` (estático) | `(sqlitePath) => Promise<BatchRepository>` — `sqlitePath` é `'sandbox/batches.db'` ou `'producao/batches.db'`, tem que bater com um dos caminhos registrados em `add_migrations` no `lib.rs`. Abre a conexão via `Database.load('sqlite:' + sqlitePath)`. |
@@ -287,7 +326,20 @@ processo Rust, sem processo separado).
 | `saveItemResult` | `(item: DoneItem \| FailedItem) => Promise<void>` — grava o resultado final: `done` grava `envelope_id`/`signer_id`/`sign_url` e limpa `error_message`; `failed` grava só `error_message`. |
 | `reclaimStale` | `() => Promise<number>` — no boot, `UPDATE items SET status='pending' WHERE status='processing'` (itens presos por uma queda do app a meio de processamento); devolve quantas linhas foram afetadas. |
 | `resetItemForRetry` | `(batchId, itemId) => Promise<PendingItem>` — busca o item, valida a transição via `resetForRetry` (só aceita item `failed`), grava `status='pending'` com `retry_count` incrementado e `error_message` limpo. |
-| `rowToItem` (função de módulo, privada) | Converte uma `ItemRow` crua (snake_case, campos opcionais) para o `BatchItem` tipado do domínio — o `switch` sobre `row.status` garante que cada branch monta exatamente os campos daquele status (ex.: `done` lança se faltar `envelope_id`/`signer_id`/`sign_url`, o que indicaria corrupção de dado). |
+| `listBatches` | `(filter: HistoryFilter, limit, offset) => Promise<Batch[]>` — histórico filtrado, paginado por **lote**: usa `buildBatchIdsQuery` (de `history-query.ts`) pra achar os `batch_id` que batem com o filtro, depois reaproveita `getBatch` pra montar cada lote completo (todos os itens, mesmo que só um tenha batido no filtro). |
+| `updateClicksignStatus` | `(itemId, status: ClicksignStatus) => Promise<void>` — grava o resultado de uma checagem manual de status (chamada por `session.ts` `refreshItemStatus`); gera o próprio timestamp (`new Date().toISOString()`), mesmo padrão de `createBatch` para `createdAt`. |
+| `rowToItem` (função de módulo, privada) | Converte uma `ItemRow` crua (snake_case, campos opcionais) para o `BatchItem` tipado do domínio — o `switch` sobre `row.status` garante que cada branch monta exatamente os campos daquele status (ex.: `done` lança se faltar `envelope_id`/`signer_id`/`sign_url`, o que indicaria corrupção de dado); `clicksignStatus`/`clicksignStatusCheckedAt` são propagados via `...base` em todo branch. |
+
+### `native/history-query.ts`
+
+Montagem **pura** da query SQL do histórico de lotes — zero import de
+`@tauri-apps/plugin-sql` ou qualquer API do Tauri, testável sem banco de
+verdade (Vitest puro). Quem executa a query é `BatchRepository.listBatches`.
+
+| Nome | O que é/faz |
+|---|---|
+| `HistoryFilter` (interface) | `{ search?, status?: 'pending' \| 'signed' \| 'canceled' \| 'failed', dateFrom?, dateTo? }` — `search` é busca livre por nome do signatário OU nome do arquivo; `dateFrom`/`dateTo` filtram `batches.created_at`. |
+| `buildBatchIdsQuery` | `(filter, limit, offset) => { sql: string; params: unknown[] }` — acha os `batch_id` com ao menos um item batendo com o filtro, paginado por **lote** (não por item): mostra o lote inteiro quando qualquer item dele casa. `status: 'failed'` filtra `items.status`; `'pending'` casa `clicksign_status = 'pending'` OU `IS NULL` (item `done` nunca checado ainda conta como pendente de confirmação); `'signed'`/`'canceled'` filtram `clicksign_status` direto. Sem filtro nenhum, devolve todos os lotes. Parâmetros sempre na mesma ordem: busca → status → datas → `limit`/`offset` por último. |
 
 ### `native/pdf-store.ts`
 
@@ -317,12 +369,14 @@ separado.
 |---|---|
 | `Environment` | `'sandbox' \| 'producao'`. |
 | `ConnectionStatus` | `'ok' \| 'chave-invalida' \| 'inacessivel'`. |
-| `BatchSession` (interface) | O contrato exposto ao `App.vue`: `createBatch`, `getBatch`, `retryItem`, `testConnection`, `stop` (ver docs de cada campo no próprio arquivo). |
+| `BatchSession` (interface) | O contrato exposto ao `App.vue`: `createBatch`, `getBatch`, `retryItem`, `listHistory`, `refreshItemStatus`, `testConnection`, `stop` (ver docs de cada campo no próprio arquivo). |
 | `CLICKSIGN_BASE_URLS` | `Record<Environment, string>` — host da API por ambiente (`sandbox.clicksign.com` / `app.clicksign.com`). Nunca mesclar: contas e dados completamente separados na Clicksign. |
 | `startSession` | `(env, clicksignToken) => Promise<BatchSession>` — monta, nesta ordem: `BatchRepository.load` (banco do ambiente), `PdfStore.load`, `ClicksignClient` (com a base URL do ambiente), `TokenBucket` (capacidade 16/10s sandbox, 40/10s produção — 20% de margem sobre o limite oficial da Clicksign), `ThrottledClicksign`, e o `QueueWorker` (cujo `process` já fecha as deps de `processItem`: cliente throttled, leitor de PDF, fallback de link). Chama `worker.start()` (que já retoma itens presos) antes de devolver o objeto `BatchSession`. |
 | `createBatch` (método do objeto devolvido) | Cria o lote no repositório, **depois** salva os PDFs de cada item (em paralelo via `Promise.all`) e só então acorda o worker — nessa ordem para o worker nunca tentar ler um PDF que ainda não foi escrito. |
 | `getBatch` (método) | Repassa direto para `repo.getBatch`. |
 | `retryItem` (método) | `repo.resetItemForRetry` seguido de `worker.wake()`. |
+| `listHistory` (método) | Repassa direto para `repo.listBatches(filter, limit, offset)` — puramente leitura local no SQLite, não chama a Clicksign. |
+| `refreshItemStatus` (método) | `(batchId, itemId) => Promise<ClicksignStatus>` — busca o item via `repo.getBatch`, lança se não existir ou não estiver `done` ainda (nada pra checar); chama `throttled.run(c => c.getEnvelope(item.envelopeId))` (mesma disciplina de rate limit/retry de `testConnection`, não o `client` cru); um `ClicksignError` com `status === 404` (envelope cancelado/deletado na Clicksign) vira `envelopeStatus = null`, qualquer outro erro é relançado; mapeia via `mapEnvelopeStatus` e persiste via `repo.updateClicksignStatus` antes de devolver o status. |
 | `testConnection` (método) | Chama `throttled.run(c => c.getEnvelope(<uuid zerado>))` — **importante**: passa por `throttled`, não pelo `client` direto, para compartilhar o bucket com o worker e reaproveitar o retry em 429 (sem isso, um 429 durante um lote grande em andamento vira "inacessível" por engano). Um 404 aqui conta como `'ok'` (autenticou; só o envelope de teste não existe); 401 vira `'chave-invalida'`; qualquer outro erro vira `'inacessivel'`. |
 | `stop` (método) | Para o worker e fecha a conexão do repositório. |
 
@@ -350,7 +404,8 @@ diretamente pelos pacotes `@tauri-apps/plugin-*`.
 | Nome | O que é/faz |
 |---|---|
 | `SCHEMA_SQL` (constante) | O DDL completo do banco: `PRAGMA journal_mode = WAL` (essencial — sem ele, escritas concorrentes no mesmo arquivo têm bem mais chance de `SQLITE_BUSY`; é a paridade com o `node:sqlite` original, que já ligava WAL por padrão), tabela `batches` (`id`, `created_at`), tabela `items` (todas as colunas de `ItemRow` em `repository.ts` — `signer_email`/`signer_phone`/`envelope_id`/`signer_id`/`sign_url`/`error_message` nuláveis, `status` com default `'pending'`, `retry_count` com default `0`) e dois índices (`idx_items_status`, `idx_items_batch`) para as queries mais frequentes (`claimNextPending` filtra por status; `getBatch` filtra por `batch_id`). |
-| `batch_migrations` | `() -> Vec<Migration>` — uma única migration (`version: 1`), registrada **duas vezes** no builder abaixo: uma para `sqlite:sandbox/batches.db`, outra para `sqlite:producao/batches.db`. Mesmo schema, bancos física e completamente separados. |
+| `ADD_CLICKSIGN_STATUS_SQL` (constante) | Migration v2: `ALTER TABLE items ADD COLUMN clicksign_status TEXT` + `clicksign_status_checked_at TEXT` — aditiva, não mexe no `SCHEMA_SQL` da v1; colunas nuláveis porque só são preenchidas quando o usuário clica "Atualizar" no histórico (lotes antigos ficam com elas `NULL`). |
+| `batch_migrations` | `() -> Vec<Migration>` — duas migrations (`version: 1` e `version: 2`), cada uma registrada **duas vezes** no builder abaixo: uma para `sqlite:sandbox/batches.db`, outra para `sqlite:producao/batches.db`. Mesmo schema, bancos física e completamente separados. |
 | `run` | `pub fn run()` — o entry point real. Registra, na ordem: `tauri-plugin-dialog` (diálogo nativo de arquivos/confirmação), `tauri-plugin-fs` (leitura/escrita de PDF), `tauri-plugin-clipboard-manager` (copiar link), `tauri-plugin-store` (persistência de `config.json`), `tauri-plugin-opener` (abrir link no navegador), `tauri-plugin-sql` (SQLite, com as duas migrations de `batch_migrations()`), `tauri-plugin-http` (chamadas à Clicksign sem CORS). No `.setup()`: em debug, liga `tauri-plugin-log` (nível `Info`) para poder depurar via console; sempre, garante que `sandbox/` e `producao/` existem dentro de `app_data_dir()` **antes** de qualquer `Database.load()` — o SQLite não cria diretório pai sozinho, e sem isso o primeiro boot falharia com `CANTOPEN` (achado real da migração, ver `MIGRATION-PLAN.md`). |
 
 ---
@@ -368,3 +423,4 @@ preocupação transversal:
 | Assinatura sem token (handwritten) | `batch.ts` (`Delivery`), `process-item.ts` (`authMethodFor`), `clicksign.ts` (`addAuthenticationRequirement`) |
 | Validação antes de qualquer chamada de rede | `validation.ts` |
 | Claim atômico de item da fila (sem duas execuções pegarem o mesmo item) | `repository.ts` (`claimNextPending`, via `UPDATE ... RETURNING`) |
+| Histórico persistente + checagem manual de status (nunca automática) | `history-query.ts`, `clicksign-status.ts`, `repository.ts` (`listBatches`/`updateClicksignStatus`), `session.ts` (`listHistory`/`refreshItemStatus`), `App.vue` (seção "Histórico") |
