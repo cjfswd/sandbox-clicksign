@@ -1,5 +1,7 @@
 # HealthMais Assinaturas — Desktop (Tauri)
 
+Repositório: https://github.com/cjfswd/sandbox-clicksign
+
 App desktop Windows para envio em lote de documentos para assinatura via
 Clicksign. **Tudo roda dentro do próprio `app.exe`** — o usuário final não
 instala nem inicia nada além do instalador; só configura o token de acesso
