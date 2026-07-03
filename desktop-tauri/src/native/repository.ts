@@ -13,6 +13,7 @@ import Database from '@tauri-apps/plugin-sql';
 import type {
   Batch,
   BatchItem,
+  ClicksignStatus,
   Delivery,
   DoneItem,
   FailedItem,
@@ -20,6 +21,7 @@ import type {
   ProcessingItem,
 } from './batch.ts';
 import { resetForRetry } from './batch.ts';
+import { buildBatchIdsQuery, type HistoryFilter } from './history-query.ts';
 
 /** O que é preciso para criar um item — sem id/status/retryCount, que o repositório preenche. */
 export interface BatchItemInput {
@@ -43,6 +45,8 @@ interface ItemRow {
   signer_id: string | null;
   sign_url: string | null;
   error_message: string | null;
+  clicksign_status: string | null;
+  clicksign_status_checked_at: string | null;
 }
 
 export class BatchRepository {
@@ -168,6 +172,28 @@ export class BatchRepository {
     );
     return retried;
   }
+
+  /**
+   * Histórico filtrado, paginado por LOTE — usa buildBatchIdsQuery pra
+   * achar os batch_id que batem com o filtro, depois reaproveita getBatch
+   * pra montar cada lote completo (todos os itens, mesmo que só um tenha
+   * batido no filtro).
+   */
+  async listBatches(filter: HistoryFilter, limit: number, offset: number): Promise<Batch[]> {
+    const { sql, params } = buildBatchIdsQuery(filter, limit, offset);
+    const batchRows = await this.db.select<Array<{ id: string; created_at: string }>>(sql, params);
+    const batches = await Promise.all(batchRows.map((row) => this.getBatch(row.id)));
+    return batches.filter((b): b is Batch => b !== null);
+  }
+
+  /** Grava o resultado de uma checagem manual de status na Clicksign (ver session.ts refreshItemStatus). */
+  async updateClicksignStatus(itemId: string, status: ClicksignStatus): Promise<void> {
+    const checkedAt = new Date().toISOString();
+    await this.db.execute(
+      'UPDATE items SET clicksign_status = $1, clicksign_status_checked_at = $2 WHERE id = $3',
+      [status, checkedAt, itemId],
+    );
+  }
 }
 
 /** Converte uma linha crua do SQLite (snake_case, tipos opcionais) para o BatchItem tipado do domínio. */
@@ -183,6 +209,8 @@ function rowToItem(row: ItemRow): BatchItem {
     },
     delivery: row.delivery as Delivery,
     retryCount: row.retry_count,
+    clicksignStatus: (row.clicksign_status as ClicksignStatus | null) ?? null,
+    clicksignStatusCheckedAt: row.clicksign_status_checked_at ?? null,
   };
 
   switch (row.status) {
