@@ -6,7 +6,9 @@
  * vez de spawnar um sidecar Node separado.
  */
 import { BatchRepository, type BatchItemInput } from './repository.ts';
-import type { Batch } from './batch.ts';
+import type { Batch, ClicksignStatus } from './batch.ts';
+import type { HistoryFilter } from './history-query.ts';
+import { mapEnvelopeStatus } from './clicksign-status.ts';
 import { PdfStore } from './pdf-store.ts';
 import { ClicksignClient, ClicksignError } from './clicksign.ts';
 import { ThrottledClicksign } from './throttled-clicksign.ts';
@@ -24,6 +26,10 @@ export interface BatchSession {
   createBatch(items: BatchItemInput[], pdfBase64ByIndex: string[]): Promise<Batch>;
   getBatch(batchId: string): Promise<Batch | null>;
   retryItem(batchId: string, itemId: string): Promise<void>;
+  /** Histórico de lotes já enviados, filtrado e paginado (ver history-query.ts). */
+  listHistory(filter: HistoryFilter, limit: number, offset: number): Promise<Batch[]>;
+  /** Consulta a Clicksign pro status real de assinatura de um item já `done` e persiste o resultado. */
+  refreshItemStatus(batchId: string, itemId: string): Promise<ClicksignStatus>;
   testConnection(): Promise<ConnectionStatus>;
   /** Encerra o worker e fecha a conexão com o banco deste ambiente. */
   stop(): Promise<void>;
@@ -76,6 +82,35 @@ export async function startSession(env: Environment, clicksignToken: string): Pr
     async retryItem(batchId, itemId) {
       await repo.resetItemForRetry(batchId, itemId);
       worker.wake();
+    },
+
+    listHistory(filter, limit, offset) {
+      return repo.listBatches(filter, limit, offset);
+    },
+
+    async refreshItemStatus(batchId, itemId) {
+      const batch = await repo.getBatch(batchId);
+      const item = batch?.items.find((i) => i.id === itemId);
+      if (!item) throw new Error(`Item ${itemId} não encontrado no lote ${batchId}`);
+      if (item.status !== 'done') {
+        throw new Error('Item sem envelope criado — nada para checar na Clicksign ainda.');
+      }
+
+      let envelopeStatus: Awaited<ReturnType<typeof client.getEnvelope>>['attributes']['status'] | null;
+      try {
+        const envelope = await throttled.run((c) => c.getEnvelope(item.envelopeId));
+        envelopeStatus = envelope.attributes.status;
+      } catch (error) {
+        if (error instanceof ClicksignError && error.status === 404) {
+          envelopeStatus = null;
+        } else {
+          throw error;
+        }
+      }
+
+      const clicksignStatus = mapEnvelopeStatus(envelopeStatus);
+      await repo.updateClicksignStatus(itemId, clicksignStatus);
+      return clicksignStatus;
     },
 
     async testConnection() {
