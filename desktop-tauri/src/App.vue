@@ -6,7 +6,8 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { startSession, type BatchSession, type Environment } from './native/session';
-import type { BatchItem, Delivery } from './native/batch';
+import type { Batch, BatchItem, ClicksignStatus, Delivery } from './native/batch';
+import type { HistoryFilter } from './native/history-query';
 import { validateBatchItems, type BatchItemPayload } from './validation';
 
 // Um documento na tela, do "adicionado" até "concluído" — existe antes do item existir no backend.
@@ -65,6 +66,38 @@ const batchTone = ref<'ok' | 'erro' | 'neutro'>('neutro');
 let activeBatchId: string | null = null;
 // Handle do setInterval do polling — null quando não há polling ativo.
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+const HISTORY_PAGE_SIZE = 20;
+
+// Rótulos exibidos no select de status do filtro de histórico.
+const HISTORY_STATUS_LABELS: Record<NonNullable<HistoryFilter['status']>, string> = {
+  pending: 'Pendente',
+  signed: 'Assinado',
+  canceled: 'Cancelado ou deletado',
+  failed: 'Falhou',
+};
+
+// Filtro atual da busca de histórico.
+const historySearch = ref('');
+const historyStatus = ref<'' | NonNullable<HistoryFilter['status']>>('');
+const historyDateFrom = ref('');
+const historyDateTo = ref('');
+
+// Lotes carregados na tela (acumula a cada "Carregar mais").
+const historyBatches = ref<Batch[]>([]);
+const historyOffset = ref(0);
+const historyHasMore = ref(true);
+const historyLoading = ref(false);
+const historyStatusMessage = ref('');
+
+function currentHistoryFilter(): HistoryFilter {
+  return {
+    search: historySearch.value.trim() || undefined,
+    status: historyStatus.value || undefined,
+    dateFrom: historyDateFrom.value || undefined,
+    dateTo: historyDateTo.value || undefined,
+  };
+}
 
 // Bytes crus do PDF (lidos via plugin-fs) → base64, formato que a Clicksign espera.
 const toBase64 = (bytes: Uint8Array): string => {
@@ -131,6 +164,7 @@ async function saveAndConnect(options: { skipProductionConfirm?: boolean } = {})
     session = await startSession(clicksignEnv.value, token);
     activeEnv.value = clicksignEnv.value;
     connStatus.value = await session.testConnection();
+    if (connStatus.value === 'ok') await loadHistory();
   } catch (error) {
     batchStatus.value = `Falha ao conectar com a Clicksign: ${String(error)}`;
     batchTone.value = 'erro';
@@ -330,12 +364,12 @@ async function copyLink(draft: Draft): Promise<void> {
   }
 }
 
-// Abre o link de assinatura no navegador padrão do sistema.
+// Abre o link do draft atual, mostrando erro no próprio card (actionError).
 async function openLink(draft: Draft): Promise<void> {
   if (!draft.signUrl) return;
   draft.actionError = null;
   try {
-    await openUrl(draft.signUrl);
+    await openSignUrl(draft.signUrl);
   } catch (error) {
     draft.actionError = `Falha ao abrir o link no navegador: ${String(error)}`;
   }
@@ -385,6 +419,112 @@ function statusClass(draft: Draft): string {
   if (draft.errorMessage || draft.status === 'failed') return 'text-red-600';
   if (draft.status === 'done') return 'text-emerald-600';
   return 'text-slate-500';
+}
+
+// Recarrega o histórico do zero com o filtro atual — chamado ao clicar "Buscar" ou ao abrir a seção pela primeira vez.
+async function loadHistory(): Promise<void> {
+  if (!session) return;
+  historyLoading.value = true;
+  historyOffset.value = 0;
+  try {
+    const batches = await session.listHistory(currentHistoryFilter(), HISTORY_PAGE_SIZE, 0);
+    historyBatches.value = batches;
+    historyOffset.value = batches.length;
+    historyHasMore.value = batches.length === HISTORY_PAGE_SIZE;
+    historyStatusMessage.value = batches.length === 0 ? 'Nenhum lote encontrado.' : '';
+  } catch (error) {
+    historyStatusMessage.value = `Erro ao carregar histórico: ${String(error)}`;
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+// Busca a próxima página de lotes com o filtro atual, sem limpar o que já está na tela.
+async function loadMoreHistory(): Promise<void> {
+  if (!session || historyLoading.value) return;
+  historyLoading.value = true;
+  try {
+    const batches = await session.listHistory(currentHistoryFilter(), HISTORY_PAGE_SIZE, historyOffset.value);
+    historyBatches.value.push(...batches);
+    historyOffset.value += batches.length;
+    historyHasMore.value = batches.length === HISTORY_PAGE_SIZE;
+  } catch (error) {
+    historyStatusMessage.value = `Erro ao carregar mais itens: ${String(error)}`;
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+// Atualiza o status de um único item do histórico, in-place no array reativo.
+async function refreshHistoryItem(batch: Batch, item: BatchItem): Promise<void> {
+  if (!session) return;
+  try {
+    const status = await session.refreshItemStatus(batch.id, item.id);
+    applyHistoryItemStatus(batch.id, item.id, status);
+  } catch (error) {
+    historyStatusMessage.value = `Falha ao atualizar "${item.filename}": ${String(error)}`;
+  }
+}
+
+// Roda refreshHistoryItem para todo item 'done' carregado na tela agora (não o histórico inteiro).
+async function refreshAllLoadedHistory(): Promise<void> {
+  if (!session) return;
+  const targets = historyBatches.value.flatMap((batch) =>
+    batch.items.filter((item) => item.status === 'done').map((item) => ({ batch, item })),
+  );
+  historyStatusMessage.value = `Atualizando ${targets.length} documento(s)...`;
+  const results = await Promise.allSettled(targets.map(({ batch, item }) => refreshHistoryItem(batch, item)));
+  const failed = results.filter((r) => r.status === 'rejected').length;
+  historyStatusMessage.value =
+    failed === 0 ? `${targets.length} documento(s) atualizados.` : `${failed} de ${targets.length} falharam.`;
+}
+
+// Reenfileira um item que falhou num lote antigo — o worker processa em segundo plano; recarregue o histórico depois para ver o resultado.
+async function retryHistoryItem(batch: Batch, item: BatchItem): Promise<void> {
+  if (!session) return;
+  try {
+    await session.retryItem(batch.id, item.id);
+    historyStatusMessage.value = `"${item.filename}" reenviado — clique em "Buscar" novamente em alguns segundos para ver o resultado.`;
+  } catch (error) {
+    historyStatusMessage.value = `Falha ao reenviar "${item.filename}": ${String(error)}`;
+  }
+}
+
+function applyHistoryItemStatus(batchId: string, itemId: string, status: ClicksignStatus): void {
+  const batch = historyBatches.value.find((b) => b.id === batchId);
+  const item = batch?.items.find((i) => i.id === itemId);
+  if (item) {
+    item.clicksignStatus = status;
+    item.clicksignStatusCheckedAt = new Date().toISOString();
+  }
+}
+
+function clicksignStatusLabel(item: BatchItem): string {
+  if (item.status !== 'done') return '';
+  switch (item.clicksignStatus) {
+    case 'signed':
+      return 'Assinado ✓';
+    case 'canceled':
+      return 'Cancelado/deletado na Clicksign';
+    case 'pending':
+      return 'Pendente de assinatura';
+    default:
+      return 'Status não verificado';
+  }
+}
+
+// Abre uma URL de assinatura no navegador padrão do sistema (sem tratamento de erro — cada chamador decide onde mostrar a falha).
+async function openSignUrl(url: string): Promise<void> {
+  await openUrl(url);
+}
+
+// Abre o link de um item do histórico, mostrando erro na mensagem de status da seção.
+async function openHistoryLink(url: string): Promise<void> {
+  try {
+    await openSignUrl(url);
+  } catch (error) {
+    historyStatusMessage.value = `Falha ao abrir o link: ${String(error)}`;
+  }
 }
 </script>
 
@@ -518,5 +658,87 @@ function statusClass(draft: Draft): string {
     }">
       {{ batchStatus }}
     </footer>
+
+    <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="mb-3 flex items-center justify-between">
+        <h2 class="text-sm font-bold">Histórico</h2>
+        <button
+          class="rounded bg-slate-100 px-3 py-1 text-xs font-medium hover:bg-slate-200"
+          :disabled="historyLoading"
+          @click="refreshAllLoadedHistory"
+        >
+          Atualizar tudo
+        </button>
+      </div>
+
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          v-model="historySearch"
+          type="text"
+          placeholder="Buscar por signatário ou arquivo"
+          class="w-56 rounded border border-slate-300 px-2 py-1 text-sm"
+        />
+        <select v-model="historyStatus" class="rounded border border-slate-300 px-2 py-1 text-sm">
+          <option value="">Todos os status</option>
+          <option v-for="(label, value) in HISTORY_STATUS_LABELS" :key="value" :value="value">{{ label }}</option>
+        </select>
+        <input v-model="historyDateFrom" type="date" class="rounded border border-slate-300 px-2 py-1 text-sm" />
+        <input v-model="historyDateTo" type="date" class="rounded border border-slate-300 px-2 py-1 text-sm" />
+        <button
+          class="rounded bg-slate-100 px-3 py-1 text-sm font-medium hover:bg-slate-200"
+          @click="loadHistory"
+        >
+          Buscar
+        </button>
+      </div>
+
+      <p v-if="historyStatusMessage" class="mb-2 text-xs text-slate-500">{{ historyStatusMessage }}</p>
+
+      <div v-for="batch in historyBatches" :key="batch.id" class="mb-4">
+        <p class="mb-1 text-xs font-semibold text-slate-600">
+          Lote de {{ new Date(batch.createdAt).toLocaleString('pt-BR') }} — {{ batch.items.length }} documento(s)
+        </p>
+        <div class="space-y-2">
+          <div
+            v-for="item in batch.items"
+            :key="item.id"
+            class="rounded border border-slate-200 p-2 text-sm"
+          >
+            <div class="flex items-center gap-2">
+              <span class="font-medium">📄 {{ item.filename }}</span>
+              <span class="text-xs text-slate-500">{{ item.signer.name }}</span>
+              <span class="text-xs">{{ clicksignStatusLabel(item) }}</span>
+              <button
+                v-if="item.status === 'done'"
+                class="ml-auto rounded bg-slate-100 px-2 py-0.5 text-xs hover:bg-slate-200"
+                @click="refreshHistoryItem(batch, item)"
+              >
+                Atualizar status
+              </button>
+              <button
+                v-if="item.status === 'failed'"
+                class="ml-auto rounded bg-slate-100 px-2 py-0.5 text-xs hover:bg-slate-200"
+                @click="retryHistoryItem(batch, item)"
+              >
+                Tentar de novo
+              </button>
+            </div>
+            <p v-if="item.status === 'done'" class="mt-1 break-all text-xs text-blue-600 underline">
+              <a href="#" @click.prevent="openHistoryLink(item.signUrl!)">{{ item.signUrl }}</a>
+            </p>
+            <p v-if="item.status === 'failed'" class="mt-1 text-xs text-red-600">{{ item.errorMessage }}</p>
+          </div>
+        </div>
+      </div>
+
+      <button
+        v-if="historyHasMore && historyBatches.length > 0"
+        class="mt-2 w-full rounded bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+        :disabled="historyLoading"
+        @click="loadMoreHistory"
+      >
+        Carregar mais
+      </button>
+    </section>
   </div>
 </template>
