@@ -131,12 +131,25 @@ export class ClicksignClient {
     return JSON.parse(text) as T;
   }
 
-  /** Cria o envelope (contêiner do lote de assinatura) em estado 'draft'. */
-  async createEnvelope(name: string): Promise<JsonApiResource<EnvelopeAttributes>> {
+  /**
+   * Cria o envelope (contêiner do lote de assinatura) em estado 'draft'.
+   * `deadlineAt`, quando informado, é uma string ISO 8601 completa; quando
+   * omitido, a Clicksign aplica o próprio padrão de 30 dias a partir da
+   * criação (confirmado empiricamente contra o sandbox real).
+   */
+  async createEnvelope(
+    name: string,
+    deadlineAt?: string,
+  ): Promise<JsonApiResource<EnvelopeAttributes>> {
     const result = await this.request<JsonApiDocument<JsonApiResource<EnvelopeAttributes>>>(
       'POST',
       '/api/v3/envelopes',
-      { data: { type: 'envelopes', attributes: { name } } },
+      {
+        data: {
+          type: 'envelopes',
+          attributes: deadlineAt === undefined ? { name } : { name, deadline_at: deadlineAt },
+        },
+      },
     );
     return result.data;
   }
