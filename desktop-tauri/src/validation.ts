@@ -10,6 +10,7 @@ export interface BatchItemPayload {
   contentBase64: string;
   signer: { name: string; email?: string; phoneNumber?: string };
   delivery: Delivery;
+  deadlineAt?: string;
 }
 
 export interface ItemValidationError {
