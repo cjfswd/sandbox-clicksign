@@ -52,7 +52,7 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 
 | Nome | O que é |
 |---|---|
-| `Draft` (interface) | Um documento na tela, do momento em que o PDF é adicionado até o lote terminar de processar. Existe **antes** de haver um item real no banco — por isso a maioria dos campos é opcional/nula até o envio. Ver comentários de campo no próprio arquivo (`path`, `bytes`, `phone`, `status`, `itemId`). |
+| `Draft` (interface) | Um documento na tela, do momento em que o PDF é adicionado até o lote terminar de processar. Existe **antes** de haver um item real no banco — por isso a maioria dos campos é opcional/nula até o envio. Ver comentários de campo no próprio arquivo (`path`, `bytes`, `phone`, `status`, `itemId`, `deadlineAt`). |
 | `DELIVERY_LABELS` | `Record<Delivery, string>` — rótulo exibido no `<select>` de cada linha, uma entrada por valor de `Delivery` (`link`, `email`, `whatsapp`, `handwritten`). Como é um `Record` completo, o TypeScript obriga a cobrir todo valor novo de `Delivery` aqui — se um dia adicionar um 5º delivery e esquecer este mapa, o build quebra. |
 
 #### Estado do módulo (fora do `setup`, não reativo por padrão)
@@ -80,6 +80,7 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 | `connTone` (computed) | Cor do selo de conexão. |
 | `justCopied` | Path do draft cujo link foi copiado por último (feedback "Copiado ✓" por 2s). |
 | `justCopiedAll` | `true` por 2s depois de "Copiar todos os links". |
+| `batchDeadline` | Prazo (YYYY-MM-DD) aplicado a todo novo PDF adicionado e, quando alterado via `onBatchDeadlineChange`, a todos os drafts já na tela. |
 
 #### Estado da seção "Histórico"
 
@@ -103,9 +104,9 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 | `onPhoneInput` | `(draft, event) => void` | Handler do campo de telefone. Usa `:value` em vez de `v-model` porque o valor **exibido** é a versão mascarada, não o que o usuário digitou cru. |
 | `onMounted` (hook) | — | Carrega `clicksignToken`/`clicksignEnv` do store; se já havia um token salvo, reconecta sozinho (`skipProductionConfirm: true` — não repete o aviso de produção numa reabertura do app). |
 | `saveAndConnect` | `(options?) => Promise<void>` | Fluxo principal de conexão: (1) se está indo para produção e não é reconexão automática, pede confirmação via `ask()` (diálogo nativo) — texto avisa que documentos terão valor legal; (2) salva token/ambiente no store; (3) encerra a sessão anterior se houver (`session.stop()`); (4) abre `startSession()` nova; (5) roda `testConnection()` e grava o resultado em `connStatus`. Qualquer exceção vira `connStatus = 'inacessivel'` e uma mensagem no rodapé. |
-| `addPdfs` | `() => Promise<void>` | Abre o diálogo nativo de arquivos (`plugin-dialog`, multi-seleção, filtro `*.pdf`), lê cada arquivo escolhido (`plugin-fs`) e empurra um novo `Draft` em `drafts` por arquivo, todos com `delivery: 'link'` por padrão. |
+| `addPdfs` | `() => Promise<void>` | Abre o diálogo nativo de arquivos (`plugin-dialog`, multi-seleção, filtro `*.pdf`), lê cada arquivo escolhido (`plugin-fs`) e empurra um novo `Draft` em `drafts` por arquivo, todos com `delivery: 'link'` e `deadlineAt: batchDeadline.value` por padrão (herda o prazo do lote já definido). |
 | `removeDraft` | `(index: number) => void` | Remove um draft da lista (antes do envio) via `splice`. |
-| `buildPayload` | `() => BatchItemPayload[]` | Converte os `Draft` da tela para o formato que `validateBatchItems`/`session.createBatch` esperam — nome/email/telefone "trimados", telefone sem máscara. |
+| `buildPayload` | `() => BatchItemPayload[]` | Converte os `Draft` da tela para o formato que `validateBatchItems`/`session.createBatch` esperam — nome/email/telefone "trimados", telefone sem máscara, `deadlineAt` convertido via `toDeadlineIso`. |
 | `sendBatch` | `() => Promise<void>` | Fluxo de envio: valida (`validateBatchItems`), se houver erro marca cada `draft.errorMessage` pelo índice e para; senão chama `session.createBatch(items, pdfsBase64)`, guarda `activeBatchId`, marca todos os drafts como `pending` e liga `startPolling()`. |
 | `startPolling` | `() => void` | `setInterval` de 1s: busca `session.getBatch(activeBatchId)`, atualiza `status`/`signUrl`/`errorMessage` de cada draft pelo índice, e quando todos os itens estiverem `done` ou `failed` (`settled === total`) para o timer e escreve a mensagem final no rodapé. |
 | `retryDraft` | `(draft: Draft) => Promise<void>` | Chama `session.retryItem(activeBatchId, draft.itemId)`, volta o draft para `pending` e religa o polling se ele já tinha parado (lote antes 100% concluído, agora com um item novo). |
@@ -114,6 +115,9 @@ lote) vive aqui. Usa `<script setup lang="ts">` (Composition API).
 | `copyAllLinks` | `() => Promise<void>` | Monta uma lista `"nome: link"` (um por linha) de todos os drafts já concluídos e copia tudo de uma vez; se nenhum link estiver pronto ainda, avisa no rodapé em vez de copiar vazio. |
 | `statusLabel` | `(draft: Draft) => string` | Texto de status de uma linha: erro tem prioridade sobre o status bruto (`errorMessage` non-null vence qualquer `status`). |
 | `statusClass` | `(draft: Draft) => string` | Cor do texto de status (vermelho erro/falha, verde concluído, cinza resto). |
+| `toDeadlineIso` | `(dateOnly: string) => string \| undefined` | Converte a data (YYYY-MM-DD) do `<input type="date">` pro ISO 8601 completo que `createEnvelope` espera — fim do dia (`T23:59:59.999Z`), já que um prazo "até" essa data deve valer o dia inteiro. String vazia vira `undefined` (sem prazo — a Clicksign aplica os 30 dias dela). |
+| `defaultDeadlineLabel` | `() => string` | Calcula e formata o prazo padrão que a Clicksign aplica quando nenhum é informado (hoje + 30 dias), pra mostrar ao lado do campo vazio — ex.: "02/08/2026 · 30 dias, padrão da Clicksign". |
+| `onBatchDeadlineChange` | `() => void` | Aplica `batchDeadline` a **todos** os drafts atuais — mudar o campo do lote muda todos os documentos, inclusive sobrescrevendo um prazo individual já customizado numa linha. |
 | `openSignUrl` | `(url: string) => Promise<void>` | Abre uma URL de assinatura no navegador padrão (`plugin-opener`), sem tratamento de erro — cada chamador decide onde mostrar a falha. |
 | `openHistoryLink` | `(url: string) => Promise<void>` | Abre o link de um item do histórico via `openSignUrl`; erro vira `historyStatusMessage`. |
 | `loadHistory` | `() => Promise<void>` | Recarrega o histórico do zero (`offset = 0`) com `currentHistoryFilter()`; chamada ao clicar "Buscar" e automaticamente após `saveAndConnect` conectar com sucesso (é uma leitura local no SQLite via `listHistory`, não uma chamada à Clicksign — não viola a regra de "sem checagem automática de status"). |
@@ -134,7 +138,10 @@ de delivery, link clicável quando pronto, botões de ação) → rodapé com
 `batchStatus` → seção "Histórico" (barra de filtro com busca/status/datas +
 botão "Atualizar tudo", lista de lotes agrupados por data com os documentos
 de cada um, botões "Atualizar status"/"Tentar de novo" por item, botão
-"Carregar mais").
+"Carregar mais"). Na barra de ações, um campo "Prazo do lote"
+(`batchDeadline`) propaga o prazo pra todos os documentos; cada cartão de
+documento tem seu próprio campo de prazo individual (sobrescreve o do
+lote), com o rótulo do prazo padrão exibido quando vazio.
 
 ### `src/validation.ts`
 
@@ -145,7 +152,7 @@ não tem `Buffer` do Node para decodificar base64.
 
 | Nome | Tipo | O que é/faz |
 |---|---|---|
-| `BatchItemPayload` (interface) | tipo | Formato de um item pronto para envio: nome do arquivo, conteúdo em base64, dados do signatário, delivery. |
+| `BatchItemPayload` (interface) | tipo | Formato de um item pronto para envio: nome do arquivo, conteúdo em base64, dados do signatário, delivery, `deadlineAt?` (ISO 8601 completo; ausente = a Clicksign aplica os 30 dias dela). |
 | `ItemValidationError` (interface) | tipo | Um erro de validação: índice do item na lista, campo, mensagem em português para exibir na UI. |
 | `EMAIL_PATTERN` | `RegExp` | Checagem de formato simples (não é RFC 5322 completo) — suficiente para pegar erro de digitação óbvio. |
 | `MAX_PDF_BYTES` | `number` | `10 * 1024 * 1024` — limite de tamanho de documento da própria Clicksign. |
@@ -171,7 +178,7 @@ dependência de Tauri/Node — só TypeScript.
 | `Delivery` | `'email' \| 'whatsapp' \| 'link' \| 'handwritten'` | Como o signatário é notificado e autenticado. Ver `authMethodFor`/`communicateEventsFor` em `process-item.ts` para o que cada valor implica na prática. |
 | `Signer` (interface) | tipo | `name`, `email?`, `phoneNumber?` — pelo menos um contato é exigido pela validação. |
 | `ClicksignStatus` | `'pending' \| 'signed' \| 'canceled'` | Status de assinatura confirmado na Clicksign — independente do `status` do pipeline de envio. Ver `native/clicksign-status.ts` (`mapEnvelopeStatus`) para como é derivado do envelope real. |
-| `BaseItem` (interface, privada) | tipo | Campos comuns a todo item: `id` (UUID gerado pelo repositório), `batchId`, `filename`, `signer`, `delivery`, `retryCount` (começa em 0), `clicksignStatus: ClicksignStatus \| null` (`null` até a primeira checagem manual no histórico), `clicksignStatusCheckedAt: string \| null` (timestamp ISO da última checagem). |
+| `BaseItem` (interface, privada) | tipo | Campos comuns a todo item: `id` (UUID gerado pelo repositório), `batchId`, `filename`, `signer`, `delivery`, `retryCount` (começa em 0), `clicksignStatus: ClicksignStatus \| null` (`null` até a primeira checagem manual no histórico), `clicksignStatusCheckedAt: string \| null` (timestamp ISO da última checagem), `deadlineAt: string \| null` (prazo de assinatura enviado ao `createEnvelope`; `null` = a Clicksign aplica os 30 dias dela). |
 | `PendingItem` / `ProcessingItem` / `DoneItem` / `FailedItem` (interfaces) | tipo | `BaseItem` + um `status` literal específico; `DoneItem` acrescenta `envelopeId`/`signerId`/`signUrl`, `FailedItem` acrescenta `errorMessage`. |
 | `BatchItem` | união discriminada | `PendingItem \| ProcessingItem \| DoneItem \| FailedItem` — o TypeScript só deixa acessar `envelopeId`/`errorMessage`/etc. depois de checar `status` no branch certo. |
 | `Batch` (interface) | tipo | `id`, `createdAt`, `items: BatchItem[]` — retorno de `BatchRepository.getBatch`. |
@@ -215,7 +222,7 @@ processo Rust, não no motor do webview, então não sofre CORS).
 | `ClicksignClient` (classe) | Ver métodos abaixo. Guarda `config` (imutável) e `lastRateLimitInfo` (atualizado a cada resposta, sucesso ou erro). |
 | `ClicksignClient.getLastRateLimitInfo` | Devolve o último `RateLimitInfo` visto em qualquer resposta — usado por `ThrottledClicksign` para decidir se deve esperar proativamente antes da próxima chamada. |
 | `ClicksignClient.request` (privado) | Faz **uma** requisição HTTP: monta headers (`Authorization`, `Accept`/`Content-Type: application/vnd.api+json`), serializa o body se houver, atualiza `lastRateLimitInfo`, e lança `ClicksignError` se `!response.ok` (incluindo o `resetAtMs` quando é 429). Todo método público do cliente é uma chamada a este. |
-| `ClicksignClient.createEnvelope` | `POST /envelopes` — cria o envelope (contêiner do lote) em status `draft`. |
+| `ClicksignClient.createEnvelope` | `(name, deadlineAt?) => Promise<...>` — `POST /envelopes`, cria o envelope (contêiner do lote) em status `draft`. `deadlineAt` (ISO 8601 completo) é opcional — quando informado, vai no `deadline_at` do body; quando omitido, o body fica `{ name }` só, e a Clicksign aplica o próprio padrão de 30 dias a partir da criação (confirmado empiricamente contra o sandbox real). O sandbox aceita o formato UTC `Z` sem conversão de fuso (confirmado via chamada real) e tem um limite superior de prazo (~3 meses a partir de hoje, retorna 422 se ultrapassado). |
 | `ClicksignClient.addDocument` | `POST /envelopes/:id/documents` — anexa o PDF como data URI base64 (`data:application/pdf;base64,...`). |
 | `ClicksignClient.addSigner` | `POST /envelopes/:id/signers` — registra o signatário; `communicateEvents` default é tudo `'none'`/`'email'` caso não seja passado (mas `process-item.ts` sempre passa um valor explícito). |
 | `ClicksignClient.addQualificationRequirement` | `POST /envelopes/:id/requirements` com `{action: 'agree', role: 'sign'}` — define o papel do signatário no documento. |
@@ -286,7 +293,7 @@ link de assinatura pronto.
 | `contactChannelFor` | `(delivery, hasEmail, hasPhone) => 'email' \| 'whatsapp'` — canal usado tanto para `communicate_events` quanto (via `authMethodFor`) para o requisito de autenticação; ambos exigem `'email'`/`'whatsapp'` explícito, nunca `'none'`. Para `delivery` `'whatsapp'`/`'email'` usa a própria escolha do usuário (já validada); para `'link'`/`'handwritten'` (sem canal explícito) escolhe pelo contato disponível, preferindo e-mail. Lança se não houver nem e-mail nem telefone (não deveria acontecer — a validação já barra isso antes). |
 | `communicateEventsFor` | `(delivery, contactChannel) => CommunicateEvents` — `'email'`: tudo por e-mail. `'whatsapp'`: solicitação por WhatsApp, sem lembrete, confirmação por WhatsApp. `'link'`/`'handwritten'`: sem solicitação nem lembrete automáticos (envio é manual/já sem token), mas a confirmação de assinatura (`document_signed`) ainda vai por `contactChannel` — a Clicksign exige isso sempre. |
 | `authMethodFor` | `(delivery, contactChannel) => 'email' \| 'whatsapp' \| 'handwritten'` — `'handwritten'` dispensa token (a assinatura desenhada é a prova); qualquer outro delivery usa o canal de contato normal. |
-| `processItem` | `(item, deps) => Promise<ClicksignResult>` — a sequência completa: `createEnvelope` → `addDocument` (lê o PDF via `deps.readPdfBase64`) → resolve `contactChannel` → `addSigner` (com `communicateEventsFor`) → `addQualificationRequirement` → `addAuthenticationRequirement` (com `authMethodFor`) → `activateEnvelope` → `resolveSignUrl` → se `delivery !== 'link'`, dispara `notifySigner` (envio manual não notifica pela Clicksign). Cada chamada passa por `clicksign.run(...)`, então já está sob rate limit e retry. |
+| `processItem` | `(item, deps) => Promise<ClicksignResult>` — a sequência completa: `createEnvelope` (passando `item.deadlineAt ?? undefined`) → `addDocument` (lê o PDF via `deps.readPdfBase64`) → resolve `contactChannel` → `addSigner` (com `communicateEventsFor`) → `addQualificationRequirement` → `addAuthenticationRequirement` (com `authMethodFor`) → `activateEnvelope` → `resolveSignUrl` → se `delivery !== 'link'`, dispara `notifySigner` (envio manual não notifica pela Clicksign). Cada chamada passa por `clicksign.run(...)`, então já está sob rate limit e retry. |
 | `resolveSignUrl` (privado) | Busca os eventos do envelope (`getEnvelopeEvents`), procura o evento `add_signer` e extrai a `url` do signatário; se não encontrar (nunca visto acontecer, mas tratado), cai no `signUrlFallback` com um aviso no console. |
 
 ### `native/worker.ts`
@@ -314,13 +321,13 @@ processo Rust, sem processo separado).
 
 | Nome | O que é/faz |
 |---|---|
-| `BatchItemInput` (interface) | O que é preciso para **criar** um item — sem `id`/`status`/`retryCount`, que o repositório preenche. |
-| `ItemRow` (interface, privada) | Forma exata de uma linha da tabela `items` (nomes de coluna em `snake_case`, exatamente como o SQLite devolve) — inclui `clicksign_status`/`clicksign_status_checked_at` (nuláveis, colunas da migration v2). |
+| `BatchItemInput` (interface) | O que é preciso para **criar** um item — sem `id`/`status`/`retryCount`, que o repositório preenche. Inclui `deadlineAt?: string` (opcional; ausente = a Clicksign aplica os 30 dias dela). |
+| `ItemRow` (interface, privada) | Forma exata de uma linha da tabela `items` (nomes de coluna em `snake_case`, exatamente como o SQLite devolve) — inclui `clicksign_status`/`clicksign_status_checked_at` (nuláveis, colunas da migration v2) e `deadline_at` (nulável, coluna da migration v3). |
 | `BatchRepository` (classe) | Ver construtor e métodos. |
 | `constructor` (privado) | Recebe a conexão `Database` (sqlx) já aberta — uma instância de `BatchRepository` = uma conexão = um ambiente (sandbox ou produção nunca compartilham repositório). |
 | `load` (estático) | `(sqlitePath) => Promise<BatchRepository>` — `sqlitePath` é `'sandbox/batches.db'` ou `'producao/batches.db'`, tem que bater com um dos caminhos registrados em `add_migrations` no `lib.rs`. Abre a conexão via `Database.load('sqlite:' + sqlitePath)`. |
 | `close` | `() => Promise<void>` — fecha a conexão (na troca de ambiente ou ao encerrar a sessão). |
-| `createBatch` | `(items) => Promise<Batch>` — gera um UUID de lote, insere a linha em `batches` e uma linha por item em `items`, tudo dentro de uma transação (`BEGIN`/`COMMIT`, `ROLLBACK` em qualquer erro) — ou tudo entra, ou nada entra. Devolve o lote recém-criado via `getBatch`. |
+| `createBatch` | `(items) => Promise<Batch>` — gera um UUID de lote, insere a linha em `batches` e uma linha por item em `items` (incluindo `deadline_at`, se informado), tudo dentro de uma transação (`BEGIN`/`COMMIT`, `ROLLBACK` em qualquer erro) — ou tudo entra, ou nada entra. Devolve o lote recém-criado via `getBatch`. |
 | `getBatch` | `(batchId) => Promise<Batch \| null>` — busca a linha do lote e todos os itens (ordenados por `seq`, a ordem de criação); `null` se o id não existir. |
 | `claimNextPending` | `() => Promise<ProcessingItem \| null>` — o coração da fila: um único `UPDATE ... WHERE id = (SELECT ... status='pending' ORDER BY rowid LIMIT 1) RETURNING *`. É atômico — mesmo com múltiplas chamadas concorrentes (não deveria haver, mas a garantia é do SQL, não de lock em memória), cada linha só pode ser reivindicada uma vez. Lança se a linha retornada não estiver de fato em `processing` (bug de invariante). |
 | `saveItemResult` | `(item: DoneItem \| FailedItem) => Promise<void>` — grava o resultado final: `done` grava `envelope_id`/`signer_id`/`sign_url` e limpa `error_message`; `failed` grava só `error_message`. |
@@ -328,7 +335,7 @@ processo Rust, sem processo separado).
 | `resetItemForRetry` | `(batchId, itemId) => Promise<PendingItem>` — busca o item, valida a transição via `resetForRetry` (só aceita item `failed`), grava `status='pending'` com `retry_count` incrementado e `error_message` limpo. |
 | `listBatches` | `(filter: HistoryFilter, limit, offset) => Promise<Batch[]>` — histórico filtrado, paginado por **lote**: usa `buildBatchIdsQuery` (de `history-query.ts`) pra achar os `batch_id` que batem com o filtro, depois reaproveita `getBatch` pra montar cada lote completo (todos os itens, mesmo que só um tenha batido no filtro). |
 | `updateClicksignStatus` | `(itemId, status: ClicksignStatus) => Promise<void>` — grava o resultado de uma checagem manual de status (chamada por `session.ts` `refreshItemStatus`); gera o próprio timestamp (`new Date().toISOString()`), mesmo padrão de `createBatch` para `createdAt`. |
-| `rowToItem` (função de módulo, privada) | Converte uma `ItemRow` crua (snake_case, campos opcionais) para o `BatchItem` tipado do domínio — o `switch` sobre `row.status` garante que cada branch monta exatamente os campos daquele status (ex.: `done` lança se faltar `envelope_id`/`signer_id`/`sign_url`, o que indicaria corrupção de dado); `clicksignStatus`/`clicksignStatusCheckedAt` são propagados via `...base` em todo branch. |
+| `rowToItem` (função de módulo, privada) | Converte uma `ItemRow` crua (snake_case, campos opcionais) para o `BatchItem` tipado do domínio — o `switch` sobre `row.status` garante que cada branch monta exatamente os campos daquele status (ex.: `done` lança se faltar `envelope_id`/`signer_id`/`sign_url`, o que indicaria corrupção de dado); `clicksignStatus`/`clicksignStatusCheckedAt`/`deadlineAt` são propagados via `...base` em todo branch. |
 
 ### `native/history-query.ts`
 
@@ -405,7 +412,8 @@ diretamente pelos pacotes `@tauri-apps/plugin-*`.
 |---|---|
 | `SCHEMA_SQL` (constante) | O DDL completo do banco: `PRAGMA journal_mode = WAL` (essencial — sem ele, escritas concorrentes no mesmo arquivo têm bem mais chance de `SQLITE_BUSY`; é a paridade com o `node:sqlite` original, que já ligava WAL por padrão), tabela `batches` (`id`, `created_at`), tabela `items` (todas as colunas de `ItemRow` em `repository.ts` — `signer_email`/`signer_phone`/`envelope_id`/`signer_id`/`sign_url`/`error_message` nuláveis, `status` com default `'pending'`, `retry_count` com default `0`) e dois índices (`idx_items_status`, `idx_items_batch`) para as queries mais frequentes (`claimNextPending` filtra por status; `getBatch` filtra por `batch_id`). |
 | `ADD_CLICKSIGN_STATUS_SQL` (constante) | Migration v2: `ALTER TABLE items ADD COLUMN clicksign_status TEXT` + `clicksign_status_checked_at TEXT` — aditiva, não mexe no `SCHEMA_SQL` da v1; colunas nuláveis porque só são preenchidas quando o usuário clica "Atualizar" no histórico (lotes antigos ficam com elas `NULL`). |
-| `batch_migrations` | `() -> Vec<Migration>` — duas migrations (`version: 1` e `version: 2`), cada uma registrada **duas vezes** no builder abaixo: uma para `sqlite:sandbox/batches.db`, outra para `sqlite:producao/batches.db`. Mesmo schema, bancos física e completamente separados. |
+| `ADD_DEADLINE_AT_SQL` (constante) | Migration v3: `ALTER TABLE items ADD COLUMN deadline_at TEXT` — aditiva, coluna nulável (`null` = a Clicksign aplica os 30 dias dela). |
+| `batch_migrations` | `() -> Vec<Migration>` — três migrations (`version: 1`, `version: 2`, `version: 3`), cada uma registrada **duas vezes** no builder abaixo: uma para `sqlite:sandbox/batches.db`, outra para `sqlite:producao/batches.db`. Mesmo schema, bancos física e completamente separados. |
 | `run` | `pub fn run()` — o entry point real. Registra, na ordem: `tauri-plugin-dialog` (diálogo nativo de arquivos/confirmação), `tauri-plugin-fs` (leitura/escrita de PDF), `tauri-plugin-clipboard-manager` (copiar link), `tauri-plugin-store` (persistência de `config.json`), `tauri-plugin-opener` (abrir link no navegador), `tauri-plugin-sql` (SQLite, com as duas migrations de `batch_migrations()`), `tauri-plugin-http` (chamadas à Clicksign sem CORS). No `.setup()`: em debug, liga `tauri-plugin-log` (nível `Info`) para poder depurar via console; sempre, garante que `sandbox/` e `producao/` existem dentro de `app_data_dir()` **antes** de qualquer `Database.load()` — o SQLite não cria diretório pai sozinho, e sem isso o primeiro boot falharia com `CANTOPEN` (achado real da migração, ver `MIGRATION-PLAN.md`). |
 
 ---
@@ -424,3 +432,4 @@ preocupação transversal:
 | Validação antes de qualquer chamada de rede | `validation.ts` |
 | Claim atômico de item da fila (sem duas execuções pegarem o mesmo item) | `repository.ts` (`claimNextPending`, via `UPDATE ... RETURNING`) |
 | Histórico persistente + checagem manual de status (nunca automática) | `history-query.ts`, `clicksign-status.ts`, `repository.ts` (`listBatches`/`updateClicksignStatus`), `session.ts` (`listHistory`/`refreshItemStatus`), `App.vue` (seção "Histórico") |
+| Prazo de assinatura (deadline_at), propagação lote→item e prazo padrão de 30 dias | `batch.ts` (`BaseItem.deadlineAt`), `clicksign.ts` (`createEnvelope`), `repository.ts`/`lib.rs` (migration v3), `process-item.ts`, `App.vue` (`batchDeadline`/`toDeadlineIso`/`defaultDeadlineLabel`) |
