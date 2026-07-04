@@ -39,6 +39,13 @@ ALTER TABLE items ADD COLUMN clicksign_status TEXT;
 ALTER TABLE items ADD COLUMN clicksign_status_checked_at TEXT;
 "#;
 
+/// Migration v3: prazo de assinatura (deadline_at) configurável pelo
+/// usuário — null quando não informado, e a Clicksign aplica o próprio
+/// padrão de 30 dias a partir da criação do envelope nesse caso.
+const ADD_DEADLINE_AT_SQL: &str = r#"
+ALTER TABLE items ADD COLUMN deadline_at TEXT;
+"#;
+
 /// Migrations registradas nos dois bancos (sandbox e producao) — ver Builder abaixo.
 fn batch_migrations() -> Vec<Migration> {
     vec![
@@ -52,6 +59,12 @@ fn batch_migrations() -> Vec<Migration> {
             version: 2,
             description: "add_clicksign_status",
             sql: ADD_CLICKSIGN_STATUS_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "add_deadline_at",
+            sql: ADD_DEADLINE_AT_SQL,
             kind: MigrationKind::Up,
         },
     ]
