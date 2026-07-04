@@ -13,8 +13,31 @@ function pendingItem(): PendingItem {
     status: 'pending',
     clicksignStatus: null,
     clicksignStatusCheckedAt: null,
+    deadlineAt: null,
   };
 }
+
+it('preserva deadlineAt através de startProcessing/complete', () => {
+  const pending: PendingItem = {
+    id: 'item-1',
+    batchId: 'batch-1',
+    filename: 'contrato.pdf',
+    signer: { name: 'Ana Silva', email: 'ana@example.com' },
+    delivery: 'link',
+    retryCount: 0,
+    clicksignStatus: null,
+    clicksignStatusCheckedAt: null,
+    deadlineAt: '2026-08-15T23:59:59.999Z',
+    status: 'pending',
+  };
+  const processing = startProcessing(pending);
+  const done = complete(processing, {
+    envelopeId: 'env-1',
+    signerId: 'signer-1',
+    signUrl: 'https://sandbox.clicksign.com/notarial/widget/signatures/signer-1/redirect',
+  });
+  expect(done.deadlineAt).toBe('2026-08-15T23:59:59.999Z');
+});
 
 describe('applyClicksignStatus', () => {
   it('grava status e timestamp de checagem, preservando os outros campos do item', () => {

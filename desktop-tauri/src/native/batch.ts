@@ -31,6 +31,8 @@ interface BaseItem {
   clicksignStatus: ClicksignStatus | null;
   /** Timestamp ISO da última checagem; null se nunca checado. */
   clicksignStatusCheckedAt: string | null;
+  /** Prazo de assinatura (ISO 8601 completo) enviado no createEnvelope; null = a Clicksign aplica o próprio padrão de 30 dias. */
+  deadlineAt: string | null;
 }
 
 export interface PendingItem extends BaseItem {

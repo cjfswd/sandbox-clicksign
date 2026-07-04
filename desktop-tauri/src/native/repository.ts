@@ -28,6 +28,7 @@ export interface BatchItemInput {
   filename: string;
   signer: { name: string; email?: string; phoneNumber?: string };
   delivery: Delivery;
+  deadlineAt?: string;
 }
 
 /** Forma exata de uma linha da tabela `items` (nomes de coluna, snake_case). */
@@ -47,6 +48,7 @@ interface ItemRow {
   error_message: string | null;
   clicksign_status: string | null;
   clicksign_status_checked_at: string | null;
+  deadline_at: string | null;
 }
 
 export class BatchRepository {
@@ -75,8 +77,8 @@ export class BatchRepository {
       let seq = 0;
       for (const item of items) {
         await this.db.execute(
-          `INSERT INTO items (id, batch_id, seq, filename, signer_name, signer_email, signer_phone, delivery)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO items (id, batch_id, seq, filename, signer_name, signer_email, signer_phone, delivery, deadline_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             crypto.randomUUID(),
             batchId,
@@ -86,6 +88,7 @@ export class BatchRepository {
             item.signer.email ?? null,
             item.signer.phoneNumber ?? null,
             item.delivery,
+            item.deadlineAt ?? null,
           ],
         );
       }
@@ -211,6 +214,7 @@ function rowToItem(row: ItemRow): BatchItem {
     retryCount: row.retry_count,
     clicksignStatus: (row.clicksign_status as ClicksignStatus | null) ?? null,
     clicksignStatusCheckedAt: row.clicksign_status_checked_at ?? null,
+    deadlineAt: row.deadline_at ?? null,
   };
 
   switch (row.status) {
