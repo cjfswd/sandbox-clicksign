@@ -45,7 +45,11 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
 // Prazo aplicado a todo novo PDF adicionado e, quando alterado, a todos os drafts já na tela.
 const batchDeadline = ref('');
 
-// Converte a data (YYYY-MM-DD) escolhida pro formato ISO 8601 completo que createEnvelope espera — fim do dia, já que um prazo "até" essa data deve valer o dia inteiro.
+// Converte a data (YYYY-MM-DD) escolhida pro formato ISO 8601 completo que createEnvelope espera —
+// fim do dia em UTC (a Clicksign aceita esse formato sem conversão, confirmado empiricamente).
+// Nota: para fusos negativos (ex.: Brasil, UTC-3) isso equivale a ~21h no horário local, não
+// meia-noite local — o prazo "vale o dia inteiro" em UTC, não necessariamente no fuso do usuário.
+
 function toDeadlineIso(dateOnly: string): string | undefined {
   return dateOnly ? `${dateOnly}T23:59:59.999Z` : undefined;
 }
