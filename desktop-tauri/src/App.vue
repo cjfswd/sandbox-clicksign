@@ -22,6 +22,8 @@ interface Draft {
   // Já formatado (11) 99999-9999 — ver formatPhone; dígitos puros são extraídos no envio.
   phone: string;
   delivery: Delivery;
+  // Prazo de assinatura deste documento (YYYY-MM-DD, do <input type="date">); vazio = usa o padrão de 30 dias da Clicksign.
+  deadlineAt: string;
   // 'idle' até o lote ser enviado; depois espelha o status real do item (pending/processing/done/failed).
   status: BatchItem['status'] | 'idle';
   signUrl: string | null;
@@ -39,6 +41,25 @@ const DELIVERY_LABELS: Record<Delivery, string> = {
   whatsapp: 'WhatsApp (Clicksign envia)',
   handwritten: 'Assinatura manuscrita (sem token)',
 };
+
+// Prazo aplicado a todo novo PDF adicionado e, quando alterado, a todos os drafts já na tela.
+const batchDeadline = ref('');
+
+// Converte a data (YYYY-MM-DD) escolhida pro formato ISO 8601 completo que createEnvelope espera — fim do dia, já que um prazo "até" essa data deve valer o dia inteiro.
+function toDeadlineIso(dateOnly: string): string | undefined {
+  return dateOnly ? `${dateOnly}T23:59:59.999Z` : undefined;
+}
+
+// Calcula e formata o prazo padrão que a Clicksign aplica (30 dias a partir de agora), pra mostrar quando o campo está vazio.
+function defaultDeadlineLabel(): string {
+  const date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  return `${date.toLocaleDateString('pt-BR')} · 30 dias, padrão da Clicksign`;
+}
+
+// Aplica o prazo do lote a todos os drafts atuais — mudar o campo do lote muda todos os documentos.
+function onBatchDeadlineChange(): void {
+  for (const draft of drafts.value) draft.deadlineAt = batchDeadline.value;
+}
 
 // Store persistente (plugin-store) com token e ambiente salvos entre execuções — config.json em app_data_dir.
 let store: Store;
@@ -214,6 +235,7 @@ async function addPdfs(): Promise<void> {
       email: '',
       phone: '',
       delivery: 'link',
+      deadlineAt: batchDeadline.value,
       status: 'idle',
       signUrl: null,
       errorMessage: null,
@@ -242,6 +264,7 @@ function buildPayload(): BatchItemPayload[] {
       phoneNumber: d.phone.replace(/\D/g, '') || undefined,
     },
     delivery: d.delivery,
+    deadlineAt: toDeadlineIso(d.deadlineAt),
   }));
 }
 
@@ -276,7 +299,12 @@ async function sendBatch(): Promise<void> {
   batchStatus.value = 'Enviando lote...';
   batchTone.value = 'neutro';
   try {
-    const items = payload.map(({ filename, signer, delivery }) => ({ filename, signer, delivery }));
+    const items = payload.map(({ filename, signer, delivery, deadlineAt }) => ({
+      filename,
+      signer,
+      delivery,
+      deadlineAt,
+    }));
     const pdfBase64ByIndex = payload.map((p) => p.contentBase64);
     const batch = await session.createBatch(items, pdfBase64ByIndex);
     activeBatchId = batch.id;
@@ -585,6 +613,15 @@ async function openHistoryLink(url: string): Promise<void> {
       <button class="rounded bg-slate-100 px-3 py-1.5 text-sm font-medium hover:bg-slate-200" @click="copyAllLinks">
         {{ justCopiedAll ? 'Copiado ✓' : 'Copiar todos os links' }}
       </button>
+      <label class="flex items-center gap-1 text-xs text-slate-600">
+        Prazo do lote:
+        <input
+          v-model="batchDeadline"
+          type="date"
+          class="rounded border border-slate-300 px-2 py-1 text-sm"
+          @change="onBatchDeadlineChange"
+        />
+      </label>
       <span class="ml-auto text-xs text-slate-500">Documentos no lote: {{ drafts.length }}</span>
     </div>
 
@@ -651,6 +688,14 @@ async function openHistoryLink(url: string): Promise<void> {
           <select v-model="draft.delivery" class="rounded border border-slate-300 px-2 py-1 text-sm">
             <option v-for="(label, value) in DELIVERY_LABELS" :key="value" :value="value">{{ label }}</option>
           </select>
+          <input
+            v-model="draft.deadlineAt"
+            type="date"
+            class="rounded border border-slate-300 px-2 py-1 text-sm"
+          />
+          <span v-if="!draft.deadlineAt" class="self-center text-xs text-slate-400">
+            {{ defaultDeadlineLabel() }}
+          </span>
         </div>
       </div>
     </div>
