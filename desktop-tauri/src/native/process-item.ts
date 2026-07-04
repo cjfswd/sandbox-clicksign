@@ -82,7 +82,7 @@ export async function processItem(
 ): Promise<ClicksignResult> {
   const { clicksign } = deps;
 
-  const envelope = await clicksign.run((c) => c.createEnvelope(item.filename));
+  const envelope = await clicksign.run((c) => c.createEnvelope(item.filename, item.deadlineAt ?? undefined));
 
   const pdfBase64 = await deps.readPdfBase64(item.id);
   const document = await clicksign.run((c) => c.addDocument(envelope.id, item.filename, pdfBase64));
