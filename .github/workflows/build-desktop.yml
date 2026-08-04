@@ -1,0 +1,61 @@
+name: Build Desktop (Tauri)
+
+on:
+  push:
+    tags:
+      - "app-v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-24.04
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instala dependências do sistema (Linux)
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Instala Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache do Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-tauri/src-tauri
+
+      - name: Instala Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop-tauri/package-lock.json
+
+      - name: Instala dependências do frontend
+        working-directory: desktop-tauri
+        run: npm ci
+
+      - name: Build e publicação (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop-tauri
+          tagName: app-v__VERSION__
+          releaseName: "HealthMais Assinaturas v__VERSION__"
+          releaseBody: "Build automático gerado pelo GitHub Actions a partir do commit ${{ github.sha }}."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
