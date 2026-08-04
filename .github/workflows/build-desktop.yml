@@ -58,6 +58,6 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: "HealthMais Assinaturas v__VERSION__"
           releaseBody: "Build automático gerado pelo GitHub Actions a partir do commit ${{ github.sha }}."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
