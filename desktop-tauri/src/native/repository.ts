@@ -66,35 +66,58 @@ export class BatchRepository {
     await this.db.close();
   }
 
-  /** Insere o lote e todos os itens numa transação — ou tudo entra, ou nada entra. */
+  /**
+   * Insere o lote e todos os itens. Sem BEGIN/COMMIT manual: o plugin-sql
+   * usa um connection pool por baixo (sqlx `Pool::execute` faz um
+   * `acquire()` novo a cada chamada), então um `BEGIN` e o `COMMIT`
+   * correspondente podem cair em conexões físicas diferentes — o SQLite
+   * recusa o commit ("no transaction is active") e, pior, os INSERTs que
+   * caíram numa conexão sem transação aberta já se auto-commitam
+   * individualmente, furando a atomicidade antes mesmo desse erro
+   * aparecer. Em vez disso: os itens entram num único INSERT multi-linha
+   * (atômico por si só — SQLite embrulha cada statement isolado numa
+   * transação implícita), e se ele falhar depois do INSERT em `batches`
+   * já ter sido feito, o lote órfão é limpo manualmente.
+   */
   async createBatch(items: BatchItemInput[]): Promise<Batch> {
     const batchId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
-    await this.db.execute('BEGIN');
+    await this.db.execute('INSERT INTO batches (id, created_at) VALUES ($1, $2)', [batchId, createdAt]);
+
+    const itemColumns = [
+      'id',
+      'batch_id',
+      'seq',
+      'filename',
+      'signer_name',
+      'signer_email',
+      'signer_phone',
+      'delivery',
+      'deadline_at',
+    ];
+    const placeholders = items
+      .map((_, i) => `(${itemColumns.map((_c, j) => `$${i * itemColumns.length + j + 1}`).join(', ')})`)
+      .join(', ');
+    const params = items.flatMap((item, seq) => [
+      crypto.randomUUID(),
+      batchId,
+      seq,
+      item.filename,
+      item.signer.name,
+      item.signer.email ?? null,
+      item.signer.phoneNumber ?? null,
+      item.delivery,
+      item.deadlineAt ?? null,
+    ]);
+
     try {
-      await this.db.execute('INSERT INTO batches (id, created_at) VALUES ($1, $2)', [batchId, createdAt]);
-      let seq = 0;
-      for (const item of items) {
-        await this.db.execute(
-          `INSERT INTO items (id, batch_id, seq, filename, signer_name, signer_email, signer_phone, delivery, deadline_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            crypto.randomUUID(),
-            batchId,
-            seq++,
-            item.filename,
-            item.signer.name,
-            item.signer.email ?? null,
-            item.signer.phoneNumber ?? null,
-            item.delivery,
-            item.deadlineAt ?? null,
-          ],
-        );
-      }
-      await this.db.execute('COMMIT');
+      await this.db.execute(
+        `INSERT INTO items (${itemColumns.join(', ')}) VALUES ${placeholders}`,
+        params,
+      );
     } catch (error) {
-      await this.db.execute('ROLLBACK');
+      await this.db.execute('DELETE FROM batches WHERE id = $1', [batchId]);
       throw error;
     }
 

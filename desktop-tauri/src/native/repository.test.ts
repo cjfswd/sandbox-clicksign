@@ -113,7 +113,7 @@ describe('BatchRepository (mockIPC)', () => {
     await expect(repo.getBatch('batch-1')).rejects.toThrow();
   });
 
-  it('createBatch envia BEGIN, INSERT em batches, INSERT em items, COMMIT nessa ordem', async () => {
+  it('createBatch envia só INSERT em batches e INSERT em items, sem BEGIN/COMMIT manual', async () => {
     const executedQueries: string[] = [];
 
     mockIPC((cmd, args) => {
@@ -133,10 +133,46 @@ describe('BatchRepository (mockIPC)', () => {
     const repo = await BatchRepository.load('sandbox/batches.db');
     await repo.createBatch([{ filename: 'a.pdf', signer: { name: 'Ana' }, delivery: 'link' }]);
 
-    expect(executedQueries).toHaveLength(4);
-    expect(executedQueries[0]).toBe('BEGIN');
-    expect(executedQueries[1]).toContain('INSERT INTO batches');
-    expect(executedQueries[2]).toContain('INSERT INTO items');
-    expect(executedQueries[3]).toBe('COMMIT');
+    expect(executedQueries).toHaveLength(2);
+    expect(executedQueries[0]).toContain('INSERT INTO batches');
+    expect(executedQueries[1]).toContain('INSERT INTO items');
+  });
+
+  it('createBatch com vários itens manda um único INSERT multi-linha com os placeholders na ordem certa', async () => {
+    let itemsQuery = '';
+    let itemsParams: unknown[] = [];
+
+    mockIPC((cmd, args) => {
+      if (cmd === 'plugin:sql|load') return 'sqlite:sandbox/batches.db';
+      if (cmd === 'plugin:sql|execute') {
+        const { query, values } = args as { query: string; values: unknown[] };
+        if (query.includes('INSERT INTO items')) {
+          itemsQuery = query;
+          itemsParams = values;
+        }
+        return [0, undefined];
+      }
+      if (cmd === 'plugin:sql|select') {
+        const query = (args as { query: string }).query;
+        if (query.includes('FROM batches WHERE id')) return [batchRow];
+        if (query.includes('FROM items WHERE batch_id')) return [pendingItemRow];
+      }
+      throw new Error(`comando inesperado: ${cmd}`);
+    });
+
+    const repo = await BatchRepository.load('sandbox/batches.db');
+    await repo.createBatch([
+      { filename: 'a.pdf', signer: { name: 'Ana' }, delivery: 'link' },
+      { filename: 'b.pdf', signer: { name: 'Bia', email: 'bia@x.com' }, delivery: 'email' },
+    ]);
+
+    expect(itemsQuery).toContain('($1, $2, $3, $4, $5, $6, $7, $8, $9)');
+    expect(itemsQuery).toContain('($10, $11, $12, $13, $14, $15, $16, $17, $18)');
+    expect(itemsParams).toHaveLength(18);
+    expect(itemsParams[2]).toBe(0); // seq do 1º item
+    expect(itemsParams[3]).toBe('a.pdf');
+    expect(itemsParams[11]).toBe(1); // seq do 2º item
+    expect(itemsParams[12]).toBe('b.pdf');
+    expect(itemsParams[14]).toBe('bia@x.com');
   });
 });
